@@ -9,9 +9,25 @@ Continúa la bitácora de `poc-agentes` (sesiones 1–4, hasta 2026-09-12), que 
 ## Sesión 1 — 2026-09-16
 
 ### Por dónde retomar
-**Siguiente tarea: T1.3 — repos destino** (`ado/destinos.py`). Listar los repos del proyecto, excluir el de plantillas, y marcar cuáles ya tienen `azure-pipelines.yml` en la raíz de su rama por defecto (un `GET items?path=/azure-pipelines.yml`; un 404 significa que no lo tiene). El criterio de éxito es que la lista distinga "repo sin pipeline" de "repo que ya tiene una", porque el segundo caso es una actualización y no un alta, y eso cambia el `changeType` del push en T4.1 (`add` vs `edit`).
+**Cambio de diseño del 2026-09-16 (tarde), decidido por el usuario — el plan está reescrito, léelo antes de seguir.** Resumen: cada team project tiene un repo **`pipelines`** donde vive el pipeline de cada repo de código, y las **variables por entorno** (`vars/{common,dev,acc,pro}.yml`) van **en el repo de código**.
 
-**Deuda anotada para cuando se toque el renderizado (T3.x):** `render/renderizador.py` viene de `poc-agentes` con dos valores que ya no sirven — `template: template.yaml@templates` tiene que pasar a `catalog/<id>/template.yaml@templates` (ya está resuelto: es la propiedad `PlantillaDisponible.ruta_template`), y `name: MiOrg/MiRepoDePlantillas` a `POC-MAF/plantillas-ci`.
+**Siguiente tarea: T0.3 (ampliación) + T1.3.** Primero añadir el repo `pipelines` a `ado/sembrar.py` (con commit inicial, para que tenga `main` y `oldObjectId`). Después `ado/destinos.py`, que ya NO lista repos candidatos —el destino es fijo— sino que hace el **inventario de las cinco rutas** del alta y devuelve el contenido de las cuatro de variables (hace falta para el merge).
+
+**Deuda anotada, ahora asignada a T4.0:** `render/renderizador.py` emite `template: template.yaml@templates` y `name: MiOrg/MiRepoDePlantillas`. Debe pasar a `catalog/<id>/template.yaml@templates` (ya resuelto: es `PlantillaDisponible.ruta_template`), `POC-MAF/plantillas-ci`, y **dos** entradas en `resources.repositories`.
+
+### Cambio de diseño: repo `pipelines` centralizado + variables en el repo de código
+Decisión del usuario, tras tres preguntas cerradas. Lo que cambia:
+
+- **T1.3 se reescribe.** Desaparece "listar repos candidatos y que el usuario elija" (el destino es siempre `pipelines`). Sobrevive, y gana peso, la detección de qué ficheros existen ya: decide el `changeType` (`add`/`edit`) y equivocarse es un 400 de ADO. Ya no es un fichero sino **cinco, en dos repos**, cada uno resuelto por separado.
+- **Dos repos ⇒ dos Pull Requests ⇒ no hay atomicidad.** Reglas nuevas: orden de merge (primero variables, después pipeline), los dos PR o ninguno (si el segundo falla se abandona el primero y se borra la rama), y descripciones enlazadas entre sí.
+- **Regenerar hace MERGE, no sobrescribe.** El usuario puede ampliar los `vars/*.yml` a mano; una segunda ejecución que los volcara enteros destruiría trabajo humano. Nueva T3.4 para esto y nueva T4.4 para verificarlo contra ADO de verdad.
+- **El pipeline deja de estar al lado del código que construye.** Las tres `template.yaml` del catálogo asumen lo contrario (`mavenPomFile: pom.xml` relativo al repo checkouteado). Hay que añadirles `checkout: codigo` y que el renderizador emita `resources.repositories` con dos entradas. Nueva T4.0, y va **primero** en el Bloque 4.
+- **El manifest gana `environment_variables`**: cada plantilla declara qué variables trae de serie, su `scope` (common/per-env), sus `defaults` y si son `secret`. Sin eso el chat no sabe qué preguntar.
+- **`Requisitos` gana `repo_codigo`** (obligatorio, y validado contra ADO, no solo contra el tipo), **`entornos`** (default dev/acc/pro) y **`variables_extra`**.
+
+**Dos supuestos del YAML nuevo SIN verificar, anotados en T4.0 para comprobarlos antes de construir encima:** que `variables: - template: x@codigo` conviva con `extends:` en el mismo pipeline, y que un pipeline en `pipelines` pueda dispararse por cambios en el repo de código.
+
+**Efecto en el reparto determinista/LLM, que mejora:** el flujo pasa de 12 a 18 pasos, y los seis nuevos (resolver defaults, leer lo existente, fusionar, renderizar variables, decidir add/edit, segundo push) son **todos deterministas**. Siguen siendo **2 pasos puramente LLM y 2 híbridos**. Cuanto más concreto es el contrato de la plantilla, menos queda por adivinar.
 
 ### T1.2 completado (descubrimiento del catálogo)
 `ado/catalogo.py`: `PlantillaDisponible` (modelo Pydantic) + `descubrir_plantillas()`, `leer_schema()`, `buscar_por_arquetipo()`. Lee las tres plantillas de `plantillas-ci` en ADO y las valida.

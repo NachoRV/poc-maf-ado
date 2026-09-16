@@ -7,15 +7,69 @@
 1. **La entrada deja de ser un repo y pasa a ser una conversación.** Antes el flujo arrancaba con `fingerprint(ruta)`: señales deterministas extraídas de ficheros. Ahora arranca con un chat en el que el usuario describe requisitos. Eso mueve el LLM del *medio* del flujo (desambiguar un arquetipo) al *principio* (convertir prosa en datos estructurados), que es un trabajo distinto y más difícil.
 2. **El catálogo y los destinos dejan de estar en disco y pasan a estar en Azure DevOps.** Y el artefacto final deja de ser un fichero en `runs/` para ser una rama, un commit y un PR reales.
 
-**Decisiones ya tomadas (2026-09-16), no las re-abras sin motivo:**
+**Decisiones ya tomadas, no las re-abras sin motivo:**
 
 | Decisión | Elegido | Descartado |
 |---|---|---|
 | Qué se deja en el repo destino | **Pipeline hijo con `extends`** + pin por tag al repo de plantillas | Copia física de los ficheros de plantilla |
 | Organización del catálogo en ADO | **Un repo de plantillas, una carpeta por plantilla** (`catalog/<id>/manifest.yaml`) | Un repo por plantilla |
 | Acceso a ADO | **Organización propia + PAT, real desde el Bloque 0** | Backend local simulado |
+| Dónde vive el pipeline generado | **Un repo `pipelines` por team project**, con una carpeta por repo de código | Un `azure-pipelines.yml` en cada repo de código |
+| Dónde viven las variables por entorno | **En el repo de código**, `vars/{common,dev,acc,pro}.yml` | Junto al pipeline, en `pipelines` |
+| Contenido inicial de las variables | **El manifest declara un juego inicial**; el usuario puede ampliarlo después, y una re-ejecución **no puede pisarlo** | Esqueleto vacío / recogida libre en el chat |
+| Checkout cruzado | **En alcance**: las plantillas del catálogo se actualizan para hacer `checkout` del repo de código | Dejar YAML válido que no construye nada |
 
-La primera decisión es la importante: el repo destino queda con ~15 líneas que apuntan a una plantilla versionada. Eso es lo que hace que la plataforma sea gobernable (cambias la plantilla, se actualizan todos) y es exactamente lo que `render/renderizador.py` ya sabe hacer hoy.
+Las dos primeras hacen la plataforma gobernable: el pipeline generado son ~20 líneas que apuntan a una plantilla versionada, así que cambiar la plantilla actualiza a todos.
+
+**La consecuencia incómoda del reparto en dos repos, y hay que mirarla de frente:** el artefacto de una ejecución cae en **dos repositorios distintos**, luego son **dos Pull Requests** y **no pueden ser atómicos**. Si se mergea el pipeline y no las variables, el pipeline queda roto — referencia `vars/common.yml@codigo`, que todavía no existe. De ahí tres reglas que atraviesan todo el plan:
+
+1. **Orden de merge: primero las variables, después el pipeline.** Escrito explícitamente en la descripción de ambos PR, con enlace cruzado entre ellos.
+2. **Los dos PR se crean o no se crea ninguno.** Si el segundo falla, el primero se abandona (rama borrada), no se deja a medias.
+3. **Regenerar hace merge, no sobrescribe.** El usuario puede ampliar los `vars/*.yml` a mano después del alta; una segunda ejecución que los volcara enteros destruiría ese trabajo.
+
+**El reparto final:**
+
+```
+pipelines/                              <- PR #2 (se mergea el SEGUNDO)
+└── demo-servicio-java/
+    └── azure-pipelines.yml
+
+demo-servicio-java/                     <- PR #1 (se mergea el PRIMERO)
+├── pom.xml
+└── vars/
+    ├── common.yml
+    ├── dev.yml
+    ├── acc.yml
+    └── pro.yml
+```
+
+Y el pipeline generado deja de ser un `extends` pelado: al vivir lejos del código necesita declararlo como recurso, tanto para construirlo como para leer sus variables.
+
+```yaml
+resources:
+  repositories:
+    - repository: templates
+      type: git
+      name: POC-MAF/plantillas-ci
+      ref: refs/tags/v1.0.0
+    - repository: codigo            # el repo que se construye
+      type: git
+      name: POC-MAF/demo-servicio-java
+      ref: refs/heads/main
+
+variables:
+  - template: vars/common.yml@codigo
+  - template: vars/${{ parameters.entorno }}.yml@codigo
+
+extends:
+  template: catalog/ci-java-container/template.yaml@templates
+  parameters:
+    isDocker: true
+    javaVersion: '17'
+    appVersion: 1.0.0
+```
+
+**Dos cosas de este YAML hay que verificarlas contra ADO antes de construir encima, no darlas por buenas:** que `variables:` con `- template: ...@codigo` conviva con `extends:` en el mismo fichero, y que un pipeline alojado en `pipelines` pueda dispararse por cambios en el repo `codigo` (trigger sobre recurso de repositorio). Ninguna de las dos está comprobada en la organización todavía.
 
 ---
 
@@ -27,20 +81,28 @@ Este es el entregable conceptual del ejercicio. El flujo completo, paso a paso, 
 |---|---|---|---|
 | 1 | Recoger requisitos en chat | **LLM** | El input es prosa abierta. No hay reglas posibles. Es el único punto del sistema con entrada genuinamente no estructurada. |
 | 2 | Validar que los requisitos están completos | Determinista | JSON Schema sobre el objeto `Requisitos`. Sabe qué falta sin preguntarle a nadie. |
-| 3 | Descubrir el catálogo en ADO | Determinista | REST API + parseo de YAML. |
+| 3 | Descubrir el catálogo en ADO | Determinista | REST API + parseo de YAML, anclado por tag. |
 | 4 | Elegir plantilla | **Híbrido** | Reglas sobre los requisitos primero. El LLM solo entra si 0 o >1 candidatos. |
 | 5 | Derivar parámetros que el requisito ya fija | Determinista | Mapeo declarado en el manifest (`derived_from`). Si el usuario dijo "Java 17", `javaVersion` no lo decide un modelo. |
 | 6 | Rellenar parámetros sin requisito | **LLM** + validar-y-reintentar | Solo los huecos. Contra el `parameters.schema.json` real. |
-| 7 | Renderizar el YAML | Determinista | `yaml.dump`. El modelo nunca escribe el artefacto que se despliega. |
-| 8 | Elegir repo destino | Determinista + humano | Se listan los repos de ADO, elige el usuario. |
-| 9 | Nombre de rama, ruta del fichero, mensaje de commit | Determinista | Convención, no creatividad. |
-| 10 | Redactar la descripción del PR | **LLM** | Prosa para un revisor humano. Hereda de `catalog/justificador.py`. |
-| 11 | Crear rama + commit + PR | Determinista | REST API. |
-| 12 | Registrar la ejecución | Determinista | Ficheros en `runs/` + enlace al PR. |
+| 7 | Resolver las variables de entorno con los valores por defecto del manifest | Determinista | El juego inicial está **declarado** en la plantilla. No es trabajo para un modelo. |
+| 8 | Leer los `vars/*.yml` que ya existan en el repo de código | Determinista | Para poder hacer merge en vez de sobrescribir. |
+| 9 | Fusionar lo declarado con lo que el humano añadió | Determinista | Unión de mapas YAML, ganando siempre el valor existente. |
+| 10 | Renderizar el pipeline hijo | Determinista | `yaml.dump`. El modelo nunca escribe el artefacto que se despliega. |
+| 11 | Renderizar los cuatro `vars/*.yml` | Determinista | Ídem. |
+| 12 | Decidir `add` vs `edit` por cada fichero, en los dos repos | Determinista | Existe o no existe. Equivocarse es un 400 de ADO. |
+| 13 | Confirmación humana antes de escribir | Humano | Última puerta. |
+| 14 | Rama + commit en el repo de código (variables) | Determinista | Pushes API. |
+| 15 | Rama + commit en `pipelines` | Determinista | Pushes API. |
+| 16 | Redactar las descripciones de los dos PR | **LLM** | Prosa para un revisor humano, con el orden de merge y el enlace cruzado. |
+| 17 | Crear los dos PR | Determinista | Pull Requests API. Los dos o ninguno. |
+| 18 | Registrar la ejecución | Determinista | Ficheros en `runs/` + las dos URLs. |
 
-**Dos pasos puramente LLM (1 y 10), dos híbridos (4 y 6), ocho deterministas.** Y de los dos LLM puros, uno (el 10) es texto que ningún sistema consume: si sale mal, un humano lo lee y lo corrige. El único punto donde el modelo es imprescindible y su salida alimenta al resto es el paso 1.
+**Dos pasos puramente LLM (1 y 16), dos híbridos (4 y 6), catorce deterministas.** Y de los dos LLM puros, uno (el 16) es texto que ningún sistema consume: si sale mal, un humano lo lee y lo corrige. El único punto donde el modelo es imprescindible y su salida alimenta al resto es el paso 1.
 
-Ese es el titular. La segunda mitad —desde que existe un `Requisitos` validado hasta que hay un PR abierto— es un programa normal, auditable línea a línea, con el modelo tocando exactamente dos cosas y ambas validadas contra un esquema que escribió una persona.
+Ese es el titular, y **el reparto mejoró al concretar el diseño, no empeoró**: los pasos 7 a 12, que son los que añadió el modelo de variables por entorno, son todos deterministas. Cuanto más se concreta el contrato de la plantilla, menos queda por adivinar.
+
+La segunda mitad —desde que existe un `Requisitos` validado hasta que hay dos PR abiertos— es un programa normal, auditable línea a línea, con el modelo tocando exactamente dos cosas y ambas validadas contra un esquema que escribió una persona.
 
 ---
 
@@ -54,7 +116,7 @@ Ese es el titular. La segunda mitad —desde que existe un `Requisitos` validado
                      requisitos.json ─────────┘
                              │
                              ▼ (determinista de aquí en adelante, salvo donde se indique)
-                    DESCUBRIENDO_CATALOGO ──► catálogo ADO (repo de plantillas)
+                    DESCUBRIENDO_CATALOGO ──► plantillas-ci @ tag
                              │
                              ▼
                     SELECCIONANDO_PLANTILLA  ◄── reglas; LLM solo si ambiguo
@@ -67,58 +129,71 @@ Ese es el titular. La segunda mitad —desde que existe un `Requisitos` validado
             GENERANDO_PARAMETROS  ◄── derivación det. + LLM solo para huecos
                     │
                     ▼
-               RENDERIZANDO  ──► pipeline hijo (extends + pin por tag)
+            RESOLVIENDO_VARIABLES ──► defaults del manifest
+                    │                 + lectura de los vars/*.yml existentes
+                    │                 + MERGE (gana lo que ya estaba)
+                    ▼
+               RENDERIZANDO ──► 1 pipeline hijo + 4 vars/*.yml
                     │
                     ▼
-           SELECCIONANDO_DESTINO ──► repos ADO, elige el usuario
+            PLANIFICANDO_CAMBIOS ──► add vs edit por fichero, en los DOS repos
                     │
                     ▼
-              CONFIRMANDO_PUSH (humano)  ◄── última puerta antes de escribir en ADO
+              CONFIRMANDO_PUSH (humano)  ◄── última puerta antes de escribir
                     │
                     ▼
-            CREANDO_RAMA_Y_COMMIT ──► ADO Pushes API (sin clonar nada en local)
+        ┌───────────┴───────────┐
+        ▼                       ▼
+  rama+commit en           rama+commit en
+  <repo-codigo>            pipelines
+  (vars/*.yml)             (<repo>/azure-pipelines.yml)
+        │                       │
+        └───────────┬───────────┘
+                    ▼
+               REDACTANDO_PRS  ◄── LLM (con orden de merge y enlace cruzado)
                     │
                     ▼
-                REDACTANDO_PR  ◄── LLM
+               CREANDO_PRS ──► los dos, o ninguno (rollback de ramas)
                     │
                     ▼
-                 CREANDO_PR ──► ADO Pull Requests API
-                    │
-                    ▼
-                 COMPLETADO ──► runs/{timestamp}/ + URL del PR
+                 COMPLETADO ──► runs/{timestamp}/ + las dos URLs
 ```
 
 ## Estructura del repo
 
 ```
 poc-agentes-maf/
-├── AGENTS.md                    # reglas de trabajo (hereda de poc-agentes)
+├── AGENTS.md
 ├── docs/
-│   ├── Plan poc-ado.md          # este fichero
+│   ├── Plan poc-ado.md
 │   └── notas-agentes/Bitacora-de-sesiones.md
 ├── ado/                         # TODO lo que habla con Azure DevOps, aislado
-│   ├── cliente.py               # auth PAT, sesión HTTP, manejo de errores
-│   ├── catalogo.py              # descubrir y leer plantillas del repo de plantillas
-│   ├── destinos.py              # listar repos candidatos a destino
-│   └── cambios.py               # push (rama+commit) y creación de PR
+│   ├── cliente.py               # ✅ T1.1 - auth PAT, dos ámbitos de URL, diagnóstico
+│   ├── catalogo.py              # ✅ T1.2 - descubrir plantillas, anclado por tag
+│   ├── humo.py                  # ✅ T0.2 - comprobación de acceso
+│   ├── sembrar.py               # ✅ T0.3 - escenario de pruebas (idempotente)
+│   ├── destinos.py              # T1.3 - repo pipelines + qué ficheros ya existen
+│   └── cambios.py               # Bloque 4 - pushes y pull requests
 ├── requisitos/
-│   ├── esquema.py               # modelo Pydantic `Requisitos` + JSON Schema
-│   └── recolector.py            # slot filling conversacional (LLM)
+│   ├── esquema.py               # modelo Pydantic Requisitos
+│   └── recolector.py            # slot filling con LLM
 ├── seleccion/
-│   ├── reglas.py                # requisitos → plantilla, sin modelo
-│   └── hibrido.py               # reglas + LLM de respaldo + umbral
+│   ├── reglas.py
+│   └── hibrido.py
 ├── parametros/
-│   └── generador.py             # derivación determinista + LLM para huecos
+│   ├── generador.py             # parámetros del extends
+│   └── variables.py             # vars/*.yml: defaults + merge con lo existente
 ├── render/
-│   └── renderizador.py          # COPIADO TAL CUAL de poc-agentes
+│   ├── renderizador.py          # el pipeline hijo
+│   └── vars.py                  # los cuatro ficheros de variables
 ├── orquestacion/
-│   ├── estados.py               # enum de estados + tabla determinista/LLM
+│   ├── estados.py               # enum + tabla determinista/LLM
 │   └── flujo.py                 # el workflow (MAF)
-├── chat.py                      # punto de entrada: la terminal
+├── chat.py
 └── runs/
 ```
 
-**El límite importante es `ado/`.** Todo lo que sabe de Azure DevOps vive ahí y expone funciones de dominio (`listar_plantillas()`, `crear_pull_request(...)`). El resto del sistema no sabe que existe ADO. Si mañana hay que soportar GitHub, se escribe `github/` con la misma superficie y no se toca nada más. En la PoC anterior no hizo falta esta disciplina porque todo era disco; aquí sí.
+**El límite importante es `ado/`.** Todo lo que sabe de Azure DevOps vive ahí y expone funciones de dominio (`descubrir_plantillas()`, `crear_pull_request(...)`). El resto del sistema no sabe que existe ADO. Si mañana hay que soportar GitHub, se escribe `github/` con la misma superficie y no se toca nada más.
 
 ## Qué se reutiliza de `poc-agentes` y qué se tira
 
@@ -140,12 +215,12 @@ poc-agentes-maf/
 
 # Bloque 0 · Proyecto y acceso real a ADO (2–3 h)
 
-## T0.1 — Esqueleto del proyecto
+## T0.1 — Esqueleto del proyecto  ✅
 Estructura de carpetas de arriba, `.venv`, `requirements.txt` (`openai`, `pyyaml`, `jsonschema`, `pydantic`, `httpx`, `python-dotenv`, `agent-framework-*`), `.gitignore` con `.env` desde el primer commit. `AGENTS.md` heredando las reglas de `poc-agentes` (explicar → implementar → resumir, bitácora, teoría en Obsidian).
 
 **Criterio de éxito:** `git status` limpio con `.env` ya creado y no trackeado.
 
-## T0.2 — PAT y llamada de humo a ADO
+## T0.2 — PAT y llamada de humo a ADO  ✅
 PAT con los scopes mínimos: **Code (Read & Write)** y **Pull Request Contribute**. Nada de `Full access`. En `.env` como `AZDO_PAT`, junto a `AZDO_ORG` y `AZDO_PROJECT`.
 
 Autenticación: Basic con usuario vacío y el PAT como contraseña — `Authorization: Basic <base64(":" + PAT)>`.
@@ -157,24 +232,25 @@ Script de humo: listar los repos del proyecto.
 
 **Trampa conocida:** un PAT inválido en ADO no siempre devuelve 401; a veces devuelve 200 con la página de login. Comprueba el `Content-Type`, no solo el código de estado.
 
-## T0.3 — Sembrar el escenario en ADO
-- Un repo **`plantillas-ci`** con `catalog/ci-java-container/`, `catalog/ci-dotnet/`, `catalog/ci-node-container/` (los ficheros ya existen en `poc-agentes`). Etiquétalo `v1.0.0` — el pin por tag del `extends` necesita un tag real.
-- Dos o tres repos **destino** vacíos o casi (`demo-servicio-java`, `demo-api-node`), sin `azure-pipelines.yml`.
+## T0.3 — Sembrar el escenario en ADO  ✅ (ampliación pendiente)
+Hecho: repo **`plantillas-ci`** con las tres plantillas y tag `v1.0.0`, y los destinos **`demo-servicio-java`** y **`demo-api-node`** con commit inicial. `ado/sembrar.py`, idempotente.
 
-**Criterio de éxito:** el tag `v1.0.0` existe y puedes leer `catalog/ci-java-container/manifest.yaml` desde la web de ADO.
+**Ampliación pendiente tras el cambio de diseño:** falta crear el repo **`pipelines`** del team project, con un commit inicial (un `README.md` explicando la convención) para que tenga rama `main` y, por tanto, `oldObjectId` del que partir. Sin él, el Bloque 4 no tiene dónde escribir.
 
-**Qué NO hacer:** no configures todavía ninguna pipeline en ADO ni intentes ejecutarla. Que el YAML sea válido y esté en su sitio es suficiente para toda la PoC. Ejecutar de verdad es el Bloque 6.
+**Criterio de éxito:** `ado.humo` lista cuatro repos de trabajo — `plantillas-ci`, `pipelines`, `demo-servicio-java`, `demo-api-node` — y los tres últimos tienen rama `main`.
+
+**Qué NO hacer:** no configures todavía ninguna pipeline en ADO ni intentes ejecutarla. Que el YAML sea válido y esté en su sitio es suficiente. Ejecutar de verdad es el Bloque 6.
 
 ---
 
 # Bloque 1 · El catálogo vive en ADO (3 h)
 
-## T1.1 — Cliente REST mínimo
+## T1.1 — Cliente REST mínimo  ✅
 `ado/cliente.py`: una clase con la URL base, la cabecera de auth y un `get`/`post` que levanta excepción con el cuerpo del error incluido (los errores de ADO traen un `message` legible; perderlo te hará perder una tarde).
 
 **Criterio de éxito:** un 404 provocado a propósito imprime el mensaje de ADO, no un `KeyError`.
 
-## T1.2 — Descubrimiento del catálogo
+## T1.2 — Descubrimiento del catálogo  ✅
 `ado/catalogo.py`. Dos llamadas:
 - Listar el árbol: `GET .../_apis/git/repositories/{repoId}/items?scopePath=/catalog&recursionLevel=full&versionDescriptor.version=v1.0.0&versionDescriptor.versionType=tag&api-version=7.1`
 - Leer un fichero: el mismo endpoint con `path=...&includeContent=true&$format=json`
@@ -187,10 +263,28 @@ Devuelve una lista de `PlantillaDisponible` (id, versión, `applies_to`, `parame
 
 **Por qué importa para la oferta:** el catálogo es un dato versionado en Git, no una tabla en el código del agente. Añadir una plantilla es un PR al repo de plantillas, no un despliegue del sistema.
 
-## T1.3 — Repos destino
-`ado/destinos.py`: lista los repos del proyecto, excluye el de plantillas, y marca cuáles ya tienen `azure-pipelines.yml` en la raíz de su rama por defecto (un `GET items?path=/azure-pipelines.yml`, un 404 significa que no lo tiene).
+## T1.3 — El repo `pipelines` y el inventario de ficheros
+**Reescrita tras el cambio de diseño.** La versión original listaba repos candidatos a destino para que el usuario eligiera. Eso ya no aplica: el destino del pipeline es **siempre** el repo `pipelines` del team project, y el de las variables es siempre el repo de código. No hay nada que elegir.
 
-**Criterio de éxito:** la lista distingue "repo sin pipeline" de "repo que ya tiene una" — porque el segundo caso cambia el flujo (es una actualización, no un alta) y conviene verlo desde el principio.
+Lo que **sí** sobrevive, y ahora importa más: saber **qué ficheros existen ya**, porque eso decide el `changeType` de cada cambio del push (`add` si es nuevo, `edit` si ya está) y equivocarse es un 400 de ADO. Ya no es un fichero, son cinco, repartidos en dos repos, y cada uno se resuelve por separado — el `common.yml` puede existir mientras el pipeline no.
+
+`ado/destinos.py`:
+- `repo_pipelines(cliente)` — resuelve el repo `pipelines`, con un error claro si no existe (igual que hace `catalogo.id_repo`).
+- `inventario(cliente, repo_codigo)` — devuelve, para las cinco rutas del alta, si existen ya y con qué contenido:
+
+| Repo | Ruta | Uso del contenido |
+|---|---|---|
+| `pipelines` | `/<repo_codigo>/azure-pipelines.yml` | solo `add` vs `edit` |
+| código | `/vars/common.yml` | `add`/`edit` **y** merge |
+| código | `/vars/dev.yml` | ídem |
+| código | `/vars/acc.yml` | ídem |
+| código | `/vars/pro.yml` | ídem |
+
+Los `vars/*.yml` se traen con contenido, no solo su existencia: hacen falta para el merge del paso 9 (no pisar lo que un humano añadió). El pipeline no, porque se regenera entero desde la plantilla.
+
+Un 404 al pedir un fichero significa "no existe", y es un caso **normal**, no un error: hay que capturarlo y traducirlo, no dejarlo subir como `ErrorAdo`.
+
+**Criterio de éxito:** sobre el escenario recién sembrado, el inventario de `demo-servicio-java` dice que las cinco rutas faltan. Tras una ejecución del flujo, dice que las cinco existen y devuelve el contenido de las cuatro de variables.
 
 ---
 
@@ -199,22 +293,28 @@ Devuelve una lista de `PlantillaDisponible` (id, versión, `applies_to`, `parame
 Este es el bloque nuevo de verdad. Todo lo demás es traslado de lo que ya sabes hacer.
 
 ## T2.1 — El objeto `Requisitos`
-`requisitos/esquema.py`: un modelo Pydantic con los campos que el flujo necesita para elegir plantilla y rellenar parámetros. Arranque deliberadamente corto:
+`requisitos/esquema.py`: un modelo Pydantic con los campos que el flujo necesita para elegir plantilla, rellenar parámetros y resolver variables.
 
 ```
-tecnologia:        Literal["java", "dotnet", "node"]          obligatorio
+tecnologia:        Literal["java", "dotnet", "node"]   obligatorio
+repo_codigo:       str                                 obligatorio  (repo en ADO que se construye)
 version_lenguaje:  str | None       ("17", "8.0", "20")
 contenedor:        bool | None      ¿se publica imagen?
-repo_destino:      str | None       nombre del repo en ADO
 version_app:       str | None       semver
+entornos:          list[Literal["dev","acc","pro"]]    default ["dev","acc","pro"]
+variables_extra:   dict[str, dict]  {entorno: {nombre: valor}}, lo que el usuario añada
 notas:             str | None       texto libre que no encaja en ningún slot
 ```
 
-Cada campo con su `description` — esas descripciones se le enseñan al modelo en T2.2, así que están escritas para que las lea él.
+`repo_codigo` es obligatorio y no tiene default: sin él no se sabe ni qué construir, ni dónde poner las variables, ni qué carpeta usar dentro de `pipelines`. Y **se valida contra ADO**, no solo contra el tipo — que el usuario escriba un nombre de repo que no existe tiene que detectarse en la conversación, no en el push.
+
+`entornos` sí tiene default (los tres) porque es la convención de la casa; el usuario solo lo toca si su caso es distinto.
+
+`variables_extra` recoge lo que el usuario quiera añadir por encima del juego inicial que declara el manifest. Va anidado por entorno porque el mismo nombre puede tener valores distintos en dev y en pro.
 
 **La pieza clave no es el modelo, es `slots_que_faltan(requisitos) -> list[str]`:** una función determinista que dice qué falta para poder avanzar. El LLM **no** decide cuándo la conversación ha terminado. Lo decide esta función.
 
-**Criterio de éxito:** un `Requisitos` a medias devuelve exactamente la lista de campos obligatorios vacíos, y uno completo devuelve `[]`.
+**Criterio de éxito:** un `Requisitos` a medias devuelve exactamente la lista de campos obligatorios vacíos; uno completo devuelve `[]`; y un `repo_codigo` inexistente en ADO se rechaza con un mensaje que lista los repos que sí hay.
 
 ## T2.2 — Recolector conversacional (slot filling)
 `requisitos/recolector.py`. En cada turno:
@@ -276,67 +376,118 @@ Suena a burocracia y es la mitad del valor del ejercicio: con ese diccionario pu
 
 **Por qué esto importa más de lo que parece:** es la demostración cuantificada de que el modelo se retira solo a medida que los datos de entrada mejoran. Con un usuario que sabe lo que quiere, el sistema es puro código.
 
+## T3.4 — Variables por entorno: declarar, leer, fusionar
+**Tarea nueva**, consecuencia del modelo de variables. `parametros/variables.py`. Cero LLM: los tres pasos son deterministas.
+
+**Primero, extender el contrato del manifest.** Una plantilla tiene que declarar qué variables trae de serie, o el sistema no sabe qué generar:
+
+```yaml
+environment_variables:
+  - name: serviceName
+    scope: common                 # va a vars/common.yml
+    derived_from: repo_codigo     # sale del requisito, no se pregunta
+  - name: replicas
+    scope: per-env                # va a vars/{dev,acc,pro}.yml
+    defaults: { dev: 1, acc: 2, pro: 3 }
+  - name: dbPassword
+    scope: per-env
+    secret: true                  # -> "$(dbPassword)", NUNCA el valor
+```
+
+**Después, los tres pasos:**
+1. **Resolver los defaults** del manifest, más lo que derive del `Requisitos`, más `variables_extra`.
+2. **Leer los `vars/*.yml` que ya existan** en el repo de código (los trae T1.3).
+3. **Fusionar, ganando siempre lo existente.** Si `pro.yml` ya define `replicas: 8` porque alguien lo ajustó a mano, el default de 3 **no** lo pisa. Esta es la regla que hace que la herramienta sea segura de re-ejecutar; sin ella, la segunda pasada destruye trabajo humano.
+
+Y la regla de seguridad de `poc-agentes`, que aquí pesa más porque las variables son justo donde vive lo sensible: **un campo marcado `secret: true` sale siempre como referencia `$(nombre)` a un variable group, jamás como valor literal**. Esto no se le pide al modelo: lo impone el código, porque el modelo no toca este paso.
+
+**Criterio de éxito:** (1) con el repo de código limpio se generan los cuatro ficheros con los defaults del manifest; (2) si se siembra a mano un `pro.yml` con un valor cambiado y una variable inventada, una segunda ejecución conserva **las dos cosas**; (3) una variable `secret: true` nunca aparece con valor literal, ni siquiera si el usuario lo dictó en el chat.
+
 ---
 
-# Bloque 4 · Escribir en Azure DevOps (4–5 h)
+# Bloque 4 · Escribir en Azure DevOps (5–6 h)
 
-El bloque más "de fontanería" y el que convierte la PoC en demo. Cero IA hasta T4.4.
+El bloque más "de fontanería" y el que convierte la PoC en demo. Cero IA hasta T4.5.
+
+## T4.0 — Actualizar las plantillas del catálogo para el checkout cruzado
+**Tarea nueva, y va primero porque el resto depende de ella.** Las tres `template.yaml` vienen de `poc-agentes`, donde el pipeline vivía **dentro** del repo que construía: `ci-java-container` hace `mavenPomFile: pom.xml`, una ruta relativa al repo checkouteado. Con el pipeline en `pipelines` y el código en otro repo, eso no construye nada.
+
+Cada plantilla necesita un `- checkout: codigo` explícito y rutas relativas a ese checkout. El renderizador, por su parte, tiene que emitir el `resources.repositories` con **dos** entradas (`templates` y `codigo`), no una.
+
+**Antes de escribir código, verificar dos cosas contra ADO, porque el plan las asume y no están comprobadas:**
+1. Que `variables:` con `- template: vars/x.yml@codigo` conviva con `extends:` en el mismo pipeline.
+2. Que un pipeline alojado en `pipelines` pueda dispararse por cambios en el repo `codigo` (trigger sobre recurso de repositorio).
+
+Si la (1) no funciona, las variables se cargan desde dentro de la plantilla en vez de desde el hijo. Si la (2) no funciona, el disparo automático se sale del alcance y se documenta — no bloquea la demo.
+
+**Criterio de éxito:** el `template.yaml` actualizado sigue siendo YAML válido y declara el checkout; la deuda anotada en `render/renderizador.py` (`MiOrg/MiRepoDePlantillas` y la ruta del `extends`) queda saldada.
 
 ## T4.1 — Rama y commit en una sola llamada
-`ado/cambios.py`. **El hallazgo del bloque: no hace falta clonar nada en local.** La Pushes API crea la rama y el commit de una vez:
+`ado/cambios.py`. **Ya probado en T0.3:** la Pushes API crea rama y commit de una vez, sin clonar nada, y admite varios ficheros en el mismo commit (allí se subieron 10).
 
 `POST .../_apis/git/repositories/{repoId}/pushes?api-version=7.1`
 ```json
 {
   "refUpdates": [{ "name": "refs/heads/feat/pipeline-ci", "oldObjectId": "<sha de la rama base>" }],
   "commits": [{
-    "comment": "feat: añadir pipeline CI generada desde ci-java-container v1.0.0",
+    "comment": "feat: variables de pipeline por entorno",
     "changes": [{
       "changeType": "add",
-      "item": { "path": "/azure-pipelines.yml" },
+      "item": { "path": "/vars/common.yml" },
       "newContent": { "content": "<el YAML>", "contentType": "rawtext" }
     }]
   }]
 }
 ```
 
-El `oldObjectId` sale de `GET .../refs?filter=heads/main`. Para crear una rama desde cero se usan 40 ceros, pero aquí siempre partimos de la rama por defecto.
+El `oldObjectId` sale de `GET .../refs?filter=heads/main`. El `changeType` de **cada** cambio sale del inventario de T1.3.
 
-Nombre de rama y mensaje de commit: **deterministas, por convención** (`feat/pipeline-{plantilla}-{timestamp}`). No es trabajo para un modelo.
+Nombre de rama y mensaje de commit: **deterministas, por convención**. No es trabajo para un modelo.
 
-**Criterio de éxito:** aparece una rama nueva en el repo destino con el fichero. Compruébalo en la web de ADO, no solo por el 201.
+**Criterio de éxito:** una rama nueva en cada uno de los dos repos, con sus ficheros. Comprobado en la web de ADO, no solo por el 201.
 
-**Detalle que te va a morder:** `changeType` debe ser `"edit"` si el fichero ya existe. De ahí la comprobación de T1.3.
+## T4.2 — Los dos Pull Requests, o ninguno
+`POST .../_apis/git/repositories/{repoId}/pullrequests?api-version=7.1` con `sourceRefName`, `targetRefName`, `title`, `description`. La URL para un humano se compone como `https://dev.azure.com/{org}/{project}/_git/{repo}/pullrequest/{id}`.
 
-## T4.2 — Pull Request
-`POST .../_apis/git/repositories/{repoId}/pullrequests?api-version=7.1` con `sourceRefName`, `targetRefName`, `title`, `description`. La respuesta trae `pullRequestId`; la URL para un humano se compone como `https://dev.azure.com/{org}/{project}/_git/{repo}/pullrequest/{id}`.
+**Lo específico de este diseño:** son dos PR en dos repos y no hay transacción posible. Reglas:
+- **Orden de creación: primero las variables (repo de código), después el pipeline.** Así, si el segundo falla, lo que queda abierto es el PR inofensivo.
+- **Si el segundo falla, se revierte el primero**: se abandona el PR y se borra la rama. Dejar medio alta abierta es peor que no haber hecho nada, porque el siguiente intento no sabe en qué estado está.
+- **Las descripciones se enlazan entre sí** y dicen el orden de merge: primero variables, después pipeline. Un pipeline mergeado sin sus variables está roto.
 
-**Criterio de éxito:** el PR se abre y la URL que imprime el sistema es clicable y correcta.
+**Criterio de éxito:** los dos PR se abren enlazados; y forzando un fallo en el segundo (p.ej. un nombre de rama inválido), el primero desaparece y ADO queda como estaba.
 
 ## T4.3 — La puerta humana y la idempotencia
-Dos cosas que separan una demo de un juguete:
-- **Confirmación explícita antes de escribir.** El estado `CONFIRMANDO_PUSH` muestra el YAML final, el repo destino y el nombre de la rama, y espera un "sí". Ninguna escritura en ADO ocurre sin ella.
-- **Idempotencia.** Si la rama ya existe, no revientes: reutilízala o añade sufijo. Si ya hay un PR abierto de esa rama al destino, devuélvelo en vez de crear otro.
+- **Confirmación explícita antes de escribir.** El estado `CONFIRMANDO_PUSH` muestra los cinco ficheros, los dos repos y los nombres de rama, y espera un "sí". Ninguna escritura ocurre sin ella.
+- **Idempotencia sobre dos repos.** Si las ramas ya existen, reutilizarlas o sufijar. Si ya hay PR abiertos de esas ramas, devolverlos en vez de crear otros.
 
-**Criterio de éxito:** ejecutar el flujo dos veces seguidas con los mismos requisitos no deja dos PRs duplicados, y responder "no" en la confirmación no deja **nada** en ADO.
+**Criterio de éxito:** ejecutar el flujo dos veces con los mismos requisitos no deja PR duplicados en ninguno de los dos repos, y responder "no" en la confirmación no deja **nada** en ADO.
 
-## T4.4 — La descripción del PR (aquí sí, LLM)
-Hereda de `catalog/justificador.py`. Markdown corto para el revisor: qué plantilla se eligió y por qué, qué parámetros se aplicaron y de qué requisito sale cada uno, qué controles incluye la plantilla, qué se asumió y qué vigilar. Texto libre, sin validar-y-reintentar: no hay esquema que cumplir y un humano lo lee antes de aprobar.
+## T4.4 — Verificar el merge no destructivo, de verdad
+**Tarea nueva.** El criterio de T3.4 se prueba con ficheros en memoria; esto lo prueba contra ADO.
 
-**Criterio de éxito:** abres el PR en ADO y la descripción se sostiene sola: un compañero que no estuvo en la conversación entiende qué pasó.
+Procedimiento: ejecutar el alta completa, editar a mano en ADO un `vars/pro.yml` (cambiar un valor y añadir una variable que no está en el manifest), y **volver a ejecutar el flujo entero**. El PR resultante debe conservar las dos ediciones.
+
+**Criterio de éxito:** el diff del segundo PR no toca lo que el humano cambió. Si lo toca, la herramienta no es segura de re-ejecutar y eso es un defecto de diseño, no un detalle.
+
+## T4.5 — Las descripciones de los PR (aquí sí, LLM)
+Hereda de `catalog/justificador.py`. Markdown corto para el revisor: qué plantilla se eligió y por qué, qué parámetros se aplicaron y de qué requisito sale cada uno, qué variables se generaron y cuáles se respetaron por existir ya, qué controles incluye la plantilla, qué se asumió y qué vigilar. Más el enlace al PR hermano y el orden de merge.
+
+Texto libre, sin validar-y-reintentar: no hay esquema que cumplir y un humano lo lee antes de aprobar.
+
+**Criterio de éxito:** abres cualquiera de los dos PR en ADO y la descripción se sostiene sola, incluida la advertencia de en qué orden mergear.
 
 ---
 
 # Bloque 5 · Traza y conclusión (2 h)
 
-## T5.1 — `runs/` con el PR dentro
-Una carpeta por ejecución: `requisitos.json`, `transcripcion.md` (la conversación entera), `seleccion.json` (plantilla, origen reglas/LLM, confianza), `parametros.json` con **el origen de cada valor** (derivado del requisito / generado por el LLM), `pipeline.yml`, `descripcion-pr.md`, `metadata.json` (backend, modelo, nº de llamadas al LLM, estados recorridos) y `resultado.json` con la URL del PR.
+## T5.1 — `runs/` con los dos PR dentro
+Una carpeta por ejecución: `requisitos.json`, `transcripcion.md` (la conversación entera), `seleccion.json` (plantilla, origen reglas/LLM, confianza), `parametros.json` con **el origen de cada valor** (derivado del requisito / generado por el LLM), `variables.json` con el origen de cada variable (**default del manifest / dictada por el usuario / conservada porque ya existía**), los cinco ficheros generados, `descripcion-pr-*.md` y `metadata.json` (backend, modelo, nº de llamadas al LLM, estados recorridos). Y `resultado.json` con **las dos URLs** y el orden de merge.
 
-**Criterio de éxito:** abres una carpeta y reconstruyes la ejecución entera sin volver a ejecutar nada — incluido *de dónde salió cada valor*. Esa columna de origen es lo que no tenías en la PoC anterior.
+**Criterio de éxito:** abres una carpeta y reconstruyes la ejecución entera sin volver a ejecutar nada — incluido *de dónde salió cada valor*. Esa columna de origen es lo que no tenías en la PoC anterior, y con variables por entorno pasa de ser un lujo a ser necesaria: es la diferencia entre "el sistema puso 3 réplicas" y "el sistema respetó las 8 réplicas que alguien había puesto a mano".
 
 ## T5.2 — `CONCLUSIONES.md`
 Tres preguntas, respondidas en primera persona después de haberlo tocado:
-1. ¿Cuántos de los 12 pasos necesitaron LLM de verdad, y el reparto medido coincide con el previsto en este plan?
+1. ¿Cuántos de los 18 pasos necesitaron LLM de verdad, y el reparto medido coincide con el previsto en este plan?
 2. ¿Qué se rompió al pasar de disco a ADO, y qué habría hecho distinto si lo hubiera sabido?
 3. ¿Qué parte de este sistema seguiría siendo mía si mañana cambio de framework o de proveedor Git?
 
@@ -353,21 +504,22 @@ Tres preguntas, respondidas en primera persona después de haberlo tocado:
 
 # Ritmo sugerido
 
-| Sesión | Bloques | Horas |
-|---|---|---|
-| 1 | T0.1 – T0.3 | 3 |
-| 2 | T1.1 – T1.3 | 3 |
-| 3 | **T2.1 – T2.3** | 5 |
-| 4 | T3.1 – T3.3 | 4 |
-| 5 | **T4.1 – T4.3** | 4 |
-| 6 | T4.4 + T5.1 – T5.2 | 3 |
+| Sesión | Bloques | Horas | Estado |
+|---|---|---|---|
+| 1 | T0.1 – T0.3 | 3 | ✅ (falta crear el repo `pipelines`) |
+| 2 | T1.1 – T1.2 | 3 | ✅ |
+| 3 | T1.3 + T4.0 | 3 | inventario de ficheros + plantillas con checkout |
+| 4 | **T2.1 – T2.3** | 5 | la entrada conversacional |
+| 5 | T3.1 – T3.4 | 5 | máquina de estados + parámetros + variables |
+| 6 | **T4.1 – T4.4** | 5 | los dos PR, idempotencia y merge no destructivo |
+| 7 | T4.5 + T5.1 – T5.2 | 3 | descripciones, traza y conclusión |
 
-**Si solo hay tiempo para tres sesiones antes de la reunión: la 3, la 5 y la 6.** Con el recolector conversacional, el PR real y la traza puedes enseñar el recorrido completo de punta a punta.
+**Si solo hay tiempo para tres sesiones antes de la reunión: la 4, la 6 y la 7.** Con el recolector conversacional, los dos PR reales y la traza puedes enseñar el recorrido completo de punta a punta.
 
 # Qué no hacer en esta fase
 
 - **Nada de multiagente.** Un solo agente con estado tipado. La tentación de poner "un agente que recoge requisitos y otro que elige plantilla" es fuerte y no aporta nada aquí: son dos funciones, no dos agentes.
-- **Nada de ejecutar pipelines en ADO.** Generar y abrir el PR es el alcance. Que la pipeline corra de verdad depende de agentes de build, service connections y permisos que no están en el camino crítico.
+- **Nada de ejecutar pipelines en ADO.** Generar y abrir los PR es el alcance. Que la pipeline corra de verdad depende de agentes de build, service connections y permisos que no están en el camino crítico.
 - **Nada de UI.** La terminal es la interfaz.
 - **No más de tres plantillas.** Con tres ya hay ambigüedad, que es lo único que justifica el LLM en el paso 4.
 - **Nunca un PAT en el código, ni en un `runs/`.** Repasa que la traza no se lleve cabeceras de auth dentro.
