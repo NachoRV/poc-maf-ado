@@ -9,11 +9,36 @@ Continúa la bitácora de `poc-agentes` (sesiones 1–4, hasta 2026-09-12), que 
 ## Sesión 1 — 2026-09-16
 
 ### Por dónde retomar
-**Cambio de diseño del 2026-09-16 (tarde), decidido por el usuario — el plan está reescrito, léelo antes de seguir.** Resumen: cada team project tiene un repo **`pipelines`** donde vive el pipeline de cada repo de código, y las **variables por entorno** (`vars/{common,dev,acc,pro}.yml`) van **en el repo de código**.
+**Bloque 1 completo.** Siguiente: **T4.0** (verificar los dos supuestos del YAML y actualizar las tres `template.yaml` para el checkout cruzado) o **T2.1** (el objeto `Requisitos`). T4.0 primero es lo prudente: sus dos supuestos sin verificar condicionan el renderizador, y si el primero falla hay que rediseñar dónde se cargan las variables.
 
-**Siguiente tarea: T0.3 (ampliación) + T1.3.** Primero añadir el repo `pipelines` a `ado/sembrar.py` (con commit inicial, para que tenga `main` y `oldObjectId`). Después `ado/destinos.py`, que ya NO lista repos candidatos —el destino es fijo— sino que hace el **inventario de las cinco rutas** del alta y devuelve el contenido de las cuatro de variables (hace falta para el merge).
+**Los dos supuestos a verificar en T4.0:** (1) que `variables: - template: vars/x.yml@codigo` conviva con `extends:` en el mismo pipeline; (2) que un pipeline alojado en `pipelines` se dispare por cambios en el repo de código.
 
-**Deuda anotada, ahora asignada a T4.0:** `render/renderizador.py` emite `template: template.yaml@templates` y `name: MiOrg/MiRepoDePlantillas`. Debe pasar a `catalog/<id>/template.yaml@templates` (ya resuelto: es `PlantillaDisponible.ruta_template`), `POC-MAF/plantillas-ci`, y **dos** entradas en `resources.repositories`.
+**Deuda de T4.0:** `render/renderizador.py` emite `template: template.yaml@templates` y `name: MiOrg/MiRepoDePlantillas`. Debe pasar a `PlantillaDisponible.ruta_template`, `POC-MAF/plantillas-ci`, y **dos** entradas en `resources.repositories`.
+
+### T1.3 completada + `ado/git.py` extraído
+**`ado/git.py` (nuevo):** primitivas de Git sobre ADO — `id_repo`, `leer_fichero`, `leer_fichero_si_existe`, `listar_arbol`, `sha_rama`. Se extraen ahora y no antes porque es cuando aparece el **segundo** consumidor: que `destinos` importara de `catalogo` acoplaría cosas sin relación. División de capas: `cliente.py` es transporte, `git.py` son operaciones de Git expresadas sobre él.
+
+**`ErrorAdo` gana `type_key`**, y esa es la pieza que sostiene T1.3. Un 404 de ADO significa dos cosas muy distintas: `GitItemNotFoundException` es "ese fichero no está", caso **normal** que decide `add`/`edit`; `GitRepositoryNotFoundException` o `TF401175` son errores de verdad. `leer_fichero_si_existe()` **solo** se traga el primero. Sin esa discriminación, "ese repo no existe" se colaría como "ese fichero no existe" y el flujo prepararía un `add` contra un repo fantasma.
+
+**`ado/destinos.py`:** reescrita respecto al plan original. Desaparece elegir destino (está fijado por convención); queda el **inventario de las cinco rutas** en los dos repos, con `change_type` derivado. Los `vars/*.yml` se traen **con contenido** (hace falta para el merge de T3.4); el pipeline no, porque se regenera entero.
+
+**Bug de diseño encontrado al probar, y la forma de encontrarlo es lo que vale:** `inventario()` tenía un único parámetro `rama` que aplicaba **a los dos repos**. Son repositorios independientes con espacios de nombres de rama independientes. En el flujo real —que lee `main` en ambos— no se habría notado nunca; saltó al probar contra una rama temporal que solo existía en el repo de código. Corregido a `rama_pipelines` / `rama_codigo`. El parámetro compartido invitaba al error.
+
+**Verificado contra ADO real** creando una rama temporal en `demo-api-node` con dos de los cuatro `vars`, y borrándola al terminar:
+- Mezcla correcta: `add` para el pipeline, `acc` y `dev`; `edit` para `common` y `pro`.
+- El contenido de los existentes vuelve íntegro (incluido el `replicas: 8   # ajustado a mano` y una variable inventada que no está en ningún manifest — justo lo que T3.4 tiene que conservar).
+- `es_alta` False.
+- Repo inexistente → `ErrorAdo` listando los repos que sí hay. Rama inexistente → `ErrorAdo` con el `TF401175`. **Ninguno de los dos se disfraza de "fichero ausente".**
+
+### Bug propio: `crear_repo()` borrada en la migración de T1.1
+Al ampliar `sembrar.py` saltó `NameError: crear_repo`. Se había perdido en `dec016b`: un reemplazo por rango `t.index('def id_proyecto(')` → `t.index('def tiene_commits(')` se llevó por delante la función que había en medio.
+
+**Lo que importa no es el borrado, es por qué no se detectó.** La verificación posterior a la migración solo ejecutó `sembrar.py` contra un escenario **ya sembrado**, donde todos los repos existían: solo recorrió los caminos `[=]` y nunca llamó a `crear_repo`. Fue una prueba que no podía fallar. Regla nueva abajo.
+
+### T0.3 ampliada: repo `pipelines`
+Creado en ADO con solo su `README.md`, que documenta la convención donde se descubre: una carpeta por repo de código, las variables **no** viven ahí, y el orden de merge de los dos PR. Su contenido real lo escribe el flujo vía Pull Request — sembrarlo sería falsear la demo. Nueva variable `AZDO_REPO_PIPELINES`.
+
+Escenario final en `royovillanovai/POC-MAF`: `plantillas-ci` (tag v1.0.0), `pipelines`, `demo-servicio-java`, `demo-api-node`.
 
 ### Cambio de diseño: repo `pipelines` centralizado + variables en el repo de código
 Decisión del usuario, tras tres preguntas cerradas. Lo que cambia:

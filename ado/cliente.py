@@ -46,11 +46,18 @@ class ErrorAdo(RuntimeError):
     """
 
     def __init__(self, mensaje: str, *, status: int | None = None,
-                 metodo: str | None = None, ruta: str | None = None):
+                 metodo: str | None = None, ruta: str | None = None,
+                 type_key: str | None = None):
         super().__init__(mensaje)
         self.status = status
         self.metodo = metodo
         self.ruta = ruta
+        # `typeKey` de ADO (p.ej. "GitItemNotFoundException",
+        # "GitRepositoryNotFoundException"). Es lo unico que distingue un 404
+        # "ese fichero no existe" -- caso NORMAL -- de un 404 "ese repo no
+        # existe" -- error de verdad. Mirando solo el status, lo segundo se
+        # reportaria en silencio como lo primero.
+        self.type_key = type_key
 
 
 def cabecera_auth(pat: str) -> str:
@@ -146,6 +153,7 @@ class ClienteAdo:
             raise ErrorAdo(
                 f"{respuesta.status_code} en {metodo} {ruta}: {cuerpo.get('message', respuesta.text)}",
                 status=respuesta.status_code, metodo=metodo, ruta=ruta,
+                type_key=cuerpo.get("typeKey"),
             )
 
     # Ambito PROYECTO -- lo normal.

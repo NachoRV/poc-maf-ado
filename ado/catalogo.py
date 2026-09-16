@@ -27,7 +27,9 @@ Cuatro decisiones, y el porque de cada una:
 
 4. CACHE EN MEMORIA, Y SCHEMAS EN DIFERIDO.
    Descubrir el catalogo cuesta N+2 llamadas HTTP: una para resolver el id del
-   repo, una al arbol y una por manifest. El flujo lo necesita varias veces. Los parameters.schema.json NO se traen en
+   repo, una al arbol y una por manifest. El flujo lo necesita varias veces.
+   Las primitivas (resolver el id, leer un fichero, listar el arbol) viven en
+   ado/git.py desde que aparecio el segundo consumidor (ado/destinos.py). Los parameters.schema.json NO se traen en
    el descubrimiento: solo hace falta el de la plantilla que se acabe eligiendo.
 
 Ejecuta con (desde la raiz del repo): .venv/bin/python -m ado.catalogo
@@ -40,6 +42,7 @@ import yaml
 from pydantic import BaseModel, Field, ValidationError
 
 from ado.cliente import ClienteAdo, ErrorAdo
+from ado.git import id_repo, leer_fichero, listar_arbol
 
 CARPETA_CATALOGO = "/catalog"
 FICHERO_MANIFEST = "manifest.yaml"
@@ -98,47 +101,11 @@ class PlantillaDisponible(BaseModel):
         }
 
 
-# Caches de sesion, explicitas (y no lru_cache) para poder inspeccionarlas y
-# vaciarlas desde fuera. El id del repo se cachea aparte porque resolverlo cuesta
-# un listado completo de repos y hace falta en cada lectura de fichero: sin esto,
-# leer un schema en diferido pagaba ese listado otra vez.
-_CACHE: dict[tuple[str, str], list[PlantillaDisponible]] = {}
-_CACHE_ID_REPO: dict[str, str] = {}
-
-
-def _params_tag(tag: str) -> dict:
-    """Los parametros que anclan CUALQUIER lectura a un tag concreto."""
-    return {"versionDescriptor.version": tag, "versionDescriptor.versionType": "tag"}
-
-
-def id_repo(cliente: ClienteAdo, nombre: str) -> str:
-    if nombre in _CACHE_ID_REPO:
-        return _CACHE_ID_REPO[nombre]
-
-    repos = cliente.get("/_apis/git/repositories")["value"]
-    for repo in repos:
-        if repo["name"] == nombre:
-            _CACHE_ID_REPO[nombre] = repo["id"]
-            return repo["id"]
-    disponibles = ", ".join(sorted(r["name"] for r in repos))
-    raise ErrorCatalogo(
-        f"no existe el repo '{nombre}' en {cliente.org}/{cliente.proyecto}. "
-        f"Hay: {disponibles}. Ejecuta '.venv/bin/python -m ado.sembrar' si falta el escenario."
-    )
-
-
-def _leer_fichero(cliente: ClienteAdo, repo_id: str, ruta: str, tag: str) -> str:
-    """Contenido de un fichero del repo, en la version del tag.
-
-    `$format=json` + `includeContent=true` devuelve el texto dentro de un JSON,
-    que es lo que queremos: sin esto ADO responde el fichero en crudo y el
-    diagnostico del cliente (que exige Content-Type JSON) lo rechazaria.
-    """
-    respuesta = cliente.get(
-        f"/_apis/git/repositories/{repo_id}/items",
-        params={"path": ruta, "includeContent": "true", "$format": "json", **_params_tag(tag)},
-    )
-    return respuesta["content"]
+# Cache de sesion de las plantillas, explicita (y no lru_cache) para poder
+# inspeccionarla y vaciarla desde fuera. Se clava la org y el proyecto en la
+# clave: sin eso, dos clientes apuntando a proyectos distintos se pisarian.
+# La cache del id de repo vive en ado/git.py, junto a la primitiva que la usa.
+_CACHE: dict[tuple[str, str, str, str], list[PlantillaDisponible]] = {}
 
 
 def _carpetas_de_plantilla(cliente: ClienteAdo, repo_id: str, tag: str) -> list[str]:
@@ -148,11 +115,7 @@ def _carpetas_de_plantilla(cliente: ClienteAdo, repo_id: str, tag: str) -> list[
     carpeta suelta en /catalog (documentacion, un .gitkeep) no debe romper el
     descubrimiento ni colarse como plantilla.
     """
-    arbol = cliente.get(
-        f"/_apis/git/repositories/{repo_id}/items",
-        params={"scopePath": CARPETA_CATALOGO, "recursionLevel": "full", **_params_tag(tag)},
-    )
-    rutas = {item["path"] for item in arbol["value"]}
+    rutas = {item["path"] for item in listar_arbol(cliente, repo_id, CARPETA_CATALOGO, tag=tag)}
     return sorted(
         ruta.removeprefix(f"{CARPETA_CATALOGO}/")
         for ruta in rutas
@@ -194,7 +157,7 @@ def descubrir_plantillas(cliente: ClienteAdo, *, repo: str | None = None,
     repo = repo or os.environ.get("AZDO_REPO_PLANTILLAS", "plantillas-ci")
     tag = tag or os.environ.get("AZDO_TAG_PLANTILLAS", "v1.0.0")
 
-    clave = (repo, tag)
+    clave = (cliente.org, cliente.proyecto, repo, tag)
     if not refrescar and clave in _CACHE:
         return _CACHE[clave]
 
@@ -205,7 +168,7 @@ def descubrir_plantillas(cliente: ClienteAdo, *, repo: str | None = None,
 
     plantillas = [
         _construir_plantilla(
-            _leer_fichero(cliente, repo_id, f"{CARPETA_CATALOGO}/{c}/{FICHERO_MANIFEST}", tag), c, tag
+            leer_fichero(cliente, repo_id, f"{CARPETA_CATALOGO}/{c}/{FICHERO_MANIFEST}", tag=tag), c, tag
         )
         for c in carpetas
     ]
@@ -222,7 +185,7 @@ def leer_schema(cliente: ClienteAdo, plantilla: PlantillaDisponible,
     el schema de la que se acabe eligiendo (T3.3).
     """
     repo = repo or os.environ.get("AZDO_REPO_PLANTILLAS", "plantillas-ci")
-    crudo = _leer_fichero(cliente, id_repo(cliente, repo), plantilla.ruta_schema, plantilla.tag)
+    crudo = leer_fichero(cliente, id_repo(cliente, repo), plantilla.ruta_schema, tag=plantilla.tag)
     try:
         return json.loads(crudo)
     except json.JSONDecodeError as error:
