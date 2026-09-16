@@ -9,9 +9,27 @@ Continúa la bitácora de `poc-agentes` (sesiones 1–4, hasta 2026-09-12), que 
 ## Sesión 1 — 2026-09-16
 
 ### Por dónde retomar
-**Bloque 0 completo.** Siguiente tarea: **T1.1 — cliente REST mínimo** (`ado/cliente.py`), extrayendo a un solo sitio el patrón de petición + diagnóstico que hoy está duplicado entre `ado/humo.py` y `ado/sembrar.py`. Después T1.2 (descubrimiento del catálogo), que ya está prácticamente de-riesgado: la consulta exacta que necesita se ejecutó a mano al verificar T0.3 y funciona.
+**Siguiente tarea: T1.2 — descubrimiento del catálogo** (`ado/catalogo.py`). Ya está de-riesgada: la consulta exacta se ejecutó a mano al verificar T0.3 y funciona —
+`GET /_apis/git/repositories/{id}/items?scopePath=/catalog&recursionLevel=full&versionDescriptor.version=v1.0.0&versionDescriptor.versionType=tag`, y el contenido de cada fichero con `path=...&includeContent=true&$format=json`. Falta envolverla en `ClienteAdo`, parsear los `manifest.yaml` a objetos `PlantillaDisponible` y **cachear en memoria** (descubrir el catálogo son N+1 llamadas HTTP y el flujo lo necesita varias veces).
 
-**Deuda anotada para cuando se toque el renderizado (T3.x):** `render/renderizador.py` viene de `poc-agentes` con dos valores que ya no sirven — `template: template.yaml@templates` tiene que pasar a `catalog/<id>/template.yaml@templates` (en el repo real las plantillas cuelgan de `catalog/`), y `name: MiOrg/MiRepoDePlantillas` a `POC-MAF/plantillas-ci`.
+**Deuda anotada para cuando se toque el renderizado (T3.x):** `render/renderizador.py` viene de `poc-agentes` con dos valores que ya no sirven — `template: template.yaml@templates` tiene que pasar a `catalog/<id>/template.yaml@templates`, y `name: MiOrg/MiRepoDePlantillas` a `POC-MAF/plantillas-ci`.
+
+### T1.1 completado (cliente REST mínimo)
+`ado/cliente.py`: `ClienteAdo` + `ErrorAdo`. Un solo sitio donde vive "cómo se hace una petición a ADO y cómo se interpreta la respuesta". Motivo concreto, no estético: ese diagnóstico se escribió **mal** en T0.2 y hubo que corregirlo en T0.3 **en dos ficheros a la vez**. Con `catalogo.py`, `destinos.py` y `cambios.py` por venir, serían cinco copias de una lógica sutil y la siguiente lección aprendida solo se aplicaría donde tocara ese día.
+
+**La decisión de diseño que importa: dos ámbitos de URL, con métodos distintos.** `get`/`post`/`patch` van contra `{org}/{proyecto}`; `get_org` contra `{org}`. Es la respuesta arquitectónica al bug de T0.3 (confundir `/_apis/projects`, que es de organización, con el resto): en vez de confiar en acordarse, elegir mal deja de ser algo que pase por descuido.
+
+Otras dos, también sacadas de fallos reales:
+- **`api-version` se inyecta siempre.** ADO lo exige en cada llamada y olvidarlo da un error poco claro. Se puede sobreescribir por `params` si algún endpoint pidiera otra versión.
+- **El PAT no se filtra**, ni en `__repr__` ni en los mensajes de `ErrorAdo`. En el Bloque 5 se serializan objetos a `runs/`, y un token en una traza en disco es justo lo que el `.gitignore` intenta evitar.
+
+`ErrorAdo` guarda `status`/`metodo`/`ruta` por separado, no solo el texto: T4.3 necesita distinguir "404, la rama no existe" de "409, ya existe" sin parsear un mensaje.
+
+**Criterio de éxito verificado:** `GET /_apis/git/repositories/no-existe-este-repo` devuelve el mensaje de ADO íntegro (`TF401019: The Git repository with name or identifier ... does not exist or you do not have permissions...`), capturado como `ErrorAdo` con `status=404`. No un `KeyError`.
+
+**Migración de los dos consumidores** (la prueba real de que la abstracción sirve): `ado/humo.py` 133 → **59** líneas, `ado/sembrar.py` 333 → **246**. Los tres puntos de entrada ejecutan correctamente contra ADO real, y `sembrar.py` sigue siendo idempotente. Honestidad sobre el número: el total de líneas **sube** (466 → 507) porque `cliente.py` lleva bastante docstring; la ganancia no es tamaño, es que `grep -l 'is_redirect|content-type|www-authenticate' ado/*.py` devuelve **un solo fichero**.
+
+Limpieza de paso: borrado `ado/.gitkeep`, que ya sobraba.
 
 ### T0.3 completado (escenario sembrado en Azure DevOps)
 `ado/sembrar.py`, ejecutable con `.venv/bin/python -m ado.sembrar`. Crea en `royovillanovai/POC-MAF`:
