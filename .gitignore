@@ -1,0 +1,16 @@
+# Credenciales. Aquí vive el PAT de Azure DevOps con permiso de ESCRITURA
+# sobre los repos de la organización: esta línea es la más importante del fichero.
+.env
+
+# Entorno virtual
+.venv/
+__pycache__/
+*.pyc
+
+# macOS
+.DS_Store
+
+# Trazas de ejecución: se genera una carpeta por ejecución, no se versionan.
+# Sí se versiona el .gitkeep para que la carpeta exista al clonar.
+runs/*
+!runs/.gitkeep

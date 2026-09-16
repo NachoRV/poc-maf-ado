@@ -1,0 +1,17 @@
+# --- Modelo ---
+# Pin heredado de poc-agentes: agent-framework-openai exige openai>=2.25.0,
+# no bajar el suelo a 1.x aunque parezca que funciona.
+openai>=2.25.0,<4
+agent-framework-gemini==1.0.0b260903
+agent-framework-openai==1.14.3
+
+# --- Contratos y datos ---
+pydantic>=2.9,<3          # modelo Requisitos (T2.1) y salidas estructuradas
+jsonschema>=4.23,<5       # validación contra parameters.schema.json
+pyyaml>=6.0,<7            # manifests y renderizado del pipeline
+
+# --- Azure DevOps ---
+httpx>=0.27,<1            # cliente REST (ado/cliente.py)
+
+# --- Entorno ---
+python-dotenv>=1.0,<2     # carga de .env
