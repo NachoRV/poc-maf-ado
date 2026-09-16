@@ -9,10 +9,34 @@ Continúa la bitácora de `poc-agentes` (sesiones 1–4, hasta 2026-09-12), que 
 ## Sesión 1 — 2026-09-16
 
 ### Por dónde retomar
-**Siguiente tarea: T1.2 — descubrimiento del catálogo** (`ado/catalogo.py`). Ya está de-riesgada: la consulta exacta se ejecutó a mano al verificar T0.3 y funciona —
-`GET /_apis/git/repositories/{id}/items?scopePath=/catalog&recursionLevel=full&versionDescriptor.version=v1.0.0&versionDescriptor.versionType=tag`, y el contenido de cada fichero con `path=...&includeContent=true&$format=json`. Falta envolverla en `ClienteAdo`, parsear los `manifest.yaml` a objetos `PlantillaDisponible` y **cachear en memoria** (descubrir el catálogo son N+1 llamadas HTTP y el flujo lo necesita varias veces).
+**Siguiente tarea: T1.3 — repos destino** (`ado/destinos.py`). Listar los repos del proyecto, excluir el de plantillas, y marcar cuáles ya tienen `azure-pipelines.yml` en la raíz de su rama por defecto (un `GET items?path=/azure-pipelines.yml`; un 404 significa que no lo tiene). El criterio de éxito es que la lista distinga "repo sin pipeline" de "repo que ya tiene una", porque el segundo caso es una actualización y no un alta, y eso cambia el `changeType` del push en T4.1 (`add` vs `edit`).
 
-**Deuda anotada para cuando se toque el renderizado (T3.x):** `render/renderizador.py` viene de `poc-agentes` con dos valores que ya no sirven — `template: template.yaml@templates` tiene que pasar a `catalog/<id>/template.yaml@templates`, y `name: MiOrg/MiRepoDePlantillas` a `POC-MAF/plantillas-ci`.
+**Deuda anotada para cuando se toque el renderizado (T3.x):** `render/renderizador.py` viene de `poc-agentes` con dos valores que ya no sirven — `template: template.yaml@templates` tiene que pasar a `catalog/<id>/template.yaml@templates` (ya está resuelto: es la propiedad `PlantillaDisponible.ruta_template`), y `name: MiOrg/MiRepoDePlantillas` a `POC-MAF/plantillas-ci`.
+
+### T1.2 completado (descubrimiento del catálogo)
+`ado/catalogo.py`: `PlantillaDisponible` (modelo Pydantic) + `descubrir_plantillas()`, `leer_schema()`, `buscar_por_arquetipo()`. Lee las tres plantillas de `plantillas-ci` en ADO y las valida.
+
+**Cuatro decisiones de diseño:**
+1. **Todo se lee anclado al tag, nunca a una rama.** Si se leyera de `main`, el catálogo podría cambiar entre elegir la plantilla y renderizar el pipeline. Con el tag, una ejecución ve un catálogo congelado — y es el **mismo** `refs/tags/<tag>` que acabará escrito en el `extends`, así que lo decidido y lo generado coinciden por construcción.
+2. **El manifest es entrada no confiable** (vive en otro repo, lo edita otra gente, llega como YAML suelto). Se valida en la frontera con Pydantic: `id`, `version`, `applies_to` y `parameters` obligatorios, `applies_to` y `parameters` con `min_length=1`.
+3. **El `id` del manifest debe coincidir con el nombre de su carpeta, o se revienta.** No es quisquillosidad: la selección casa por `id` pero la ruta del `extends` se construye con la **carpeta**. Si divergen se genera un pipeline que apunta a una plantilla inexistente, y no se descubre hasta que Azure Pipelines intenta ejecutarlo.
+4. **Caché en memoria y schemas en diferido.** De N plantillas solo hace falta el `parameters.schema.json` de la que se acabe eligiendo (T3.3).
+
+`PlantillaDisponible.resumen_para_llm()` devuelve solo `id` + `applies_to` + `selection_rationale`: minimización de contexto, al modelo no le llega el manifest entero con su pool, sus controles y las descripciones largas de parámetros.
+
+**Verificado contra ADO real — camino bueno:** las 3 plantillas con sus parámetros y su `ruta_template` correcta; la caché devuelve el mismo objeto sin tráfico HTTP; `buscar_por_arquetipo('java-container')` → `['ci-java-container']`; schema en diferido leído bien.
+
+**Verificado — seis caminos de fallo**, cada uno con su mensaje propio:
+| Caso | Excepción |
+|---|---|
+| `id` ≠ nombre de carpeta | `ErrorCatalogo` explicando la divergencia selección/`extends` |
+| manifest sin `applies_to` | `ErrorCatalogo` + el error de validación de Pydantic |
+| `applies_to: []` (lista vacía) | `ErrorCatalogo` (por eso el `min_length=1`) |
+| manifest que no es YAML | `ErrorCatalogo` con el error del parser |
+| repo de plantillas inexistente | `ErrorCatalogo` listando los repos que sí hay + cómo sembrar |
+| tag inexistente | `ErrorAdo` con el `TF401175` de ADO íntegro |
+
+**Corrección de un dato que yo mismo había repetido del plan:** descubrir el catálogo **no** son N+1 llamadas, son **N+2** (listar repos para resolver el id + árbol + una por manifest). Medido, no estimado. Y había una ineficiencia peor: `leer_schema()` volvía a llamar a `id_repo()`, pagando otro listado completo de repos en cada lectura. Corregido con una caché aparte para el id del repo — `leer_schema` pasa de 2 llamadas a 1, y el segundo descubrimiento a 0.
 
 ### T1.1 completado (cliente REST mínimo)
 `ado/cliente.py`: `ClienteAdo` + `ErrorAdo`. Un solo sitio donde vive "cómo se hace una petición a ADO y cómo se interpreta la respuesta". Motivo concreto, no estético: ese diagnóstico se escribió **mal** en T0.2 y hubo que corregirlo en T0.3 **en dos ficheros a la vez**. Con `catalogo.py`, `destinos.py` y `cambios.py` por venir, serían cinco copias de una lógica sutil y la siguiente lección aprendida solo se aplicaría donde tocara ese día.
