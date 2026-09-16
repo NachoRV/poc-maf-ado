@@ -4,8 +4,11 @@ Crea, si no existen ya:
   - plantillas-ci      : el catalogo, con catalog/<id>/{manifest.yaml,
                          parameters.schema.json, template.yaml} copiado de
                          poc-agentes, y un tag v1.0.0 al que anclar el `extends`.
-  - demo-servicio-java : repo destino, con README.md y pom.xml.
-  - demo-api-node      : repo destino, con README.md y package.json.
+  - pipelines          : donde vive el azure-pipelines.yml de cada repo de
+                         codigo, una carpeta por repo. Solo el README: el resto
+                         lo escribe el flujo de la PoC via Pull Request.
+  - demo-servicio-java : repo de codigo de ejemplo, con README.md y pom.xml.
+  - demo-api-node      : repo de codigo de ejemplo, con README.md y package.json.
 
 Por que por API y no a mano desde la web: la operacion que hace falta para meter
 el contenido es la PUSHES API, la misma de T4.1 (rama + commit en una sola
@@ -61,6 +64,36 @@ hace `extends` contra este repo, anclado por tag.
 sistema que la consume.
 """
 
+README_PIPELINES = """\
+# pipelines
+
+Pipelines de Azure DevOps de todos los repos de codigo de este team project.
+
+Una carpeta por repo de codigo:
+
+    pipelines/
+    └── <nombre-del-repo-de-codigo>/
+        └── azure-pipelines.yml
+
+Ese `azure-pipelines.yml` es corto a proposito: declara los repos que necesita
+(el catalogo de plantillas y el repo de codigo), carga las variables y hace
+`extends` contra una plantilla versionada de `plantillas-ci`.
+
+## Lo que NO vive aqui
+
+Las variables por entorno. Van en el repo de codigo, en
+`vars/{common,dev,acc,pro}.yml`, y el pipeline las referencia con `@codigo`.
+
+## Alta de un pipeline nuevo = dos Pull Requests
+
+Se mergean **en este orden**:
+
+1. El del **repo de codigo**, con sus `vars/*.yml`.
+2. El de **este repo**, con el `azure-pipelines.yml`.
+
+Al reves el pipeline queda roto: referenciaria variables que todavia no existen.
+"""
+
 REPOS_DESTINO = {
     "demo-servicio-java": {
         "README.md": "# demo-servicio-java\n\nServicio Java/Maven de ejemplo. Repo destino de la PoC: todavia no tiene pipeline.\n",
@@ -91,6 +124,12 @@ def id_proyecto(cliente: ClienteAdo) -> str:
     if repos:
         return next(iter(repos.values()))["project"]["id"]
     return cliente.get_org(f"/_apis/projects/{cliente.proyecto}")["id"]
+
+
+def crear_repo(cliente: ClienteAdo, nombre: str, proyecto_id: str) -> dict:
+    """Crea un repo vacio en el proyecto. Puede requerir el scope 'Code (Manage)'
+    del PAT, que no va incluido en 'Code (Read & Write)'."""
+    return cliente.post("/_apis/git/repositories", json={"name": nombre, "project": {"id": proyecto_id}})
 
 
 def tiene_commits(cliente: ClienteAdo, repo_id: str) -> bool:
@@ -191,6 +230,7 @@ def asegurar_repo(cliente: ClienteAdo, nombre: str, proyecto_id: str,
 def main() -> None:
     load_dotenv()
     nombre_catalogo = os.environ.get("AZDO_REPO_PLANTILLAS", "plantillas-ci")
+    nombre_pipelines = os.environ.get("AZDO_REPO_PIPELINES", "pipelines")
     tag = os.environ.get("AZDO_TAG_PLANTILLAS", "v1.0.0")
 
     with ClienteAdo.desde_entorno() as cliente:
@@ -198,7 +238,7 @@ def main() -> None:
             proyecto_id = id_proyecto(cliente)
             print(f"[sembrar] {cliente.org}/{cliente.proyecto} (id {proyecto_id})\n")
 
-            print(f"[1/2] catalogo de plantillas -> {nombre_catalogo}")
+            print(f"[1/3] catalogo de plantillas -> {nombre_catalogo}")
             ficheros_catalogo = leer_catalogo_local()
             plantillas = sorted({r.split("/")[2] for r in ficheros_catalogo if r.startswith("/catalog/")})
             print(f"  [i] {len(plantillas)} plantilla(s) leidas de {CATALOGO_ORIGEN}: {', '.join(plantillas)}")
@@ -222,7 +262,16 @@ def main() -> None:
                 crear_tag(cliente, repo_catalogo["id"], tag, commit_id)
                 print(f"  [+] tag anotado {tag} -> {commit_id[:8]}")
 
-            print("\n[2/2] repos destino")
+            print(f"\n[2/3] repo de pipelines -> {nombre_pipelines}")
+            # Solo el README. El resto de su contenido (una carpeta por repo de
+            # codigo con su azure-pipelines.yml) lo escribe el flujo de la PoC
+            # via Pull Request -- sembrarlo aqui seria falsear la demo.
+            asegurar_repo(
+                cliente, nombre_pipelines, proyecto_id, {"/README.md": README_PIPELINES},
+                "docs: convencion del repo de pipelines",
+            )
+
+            print("\n[3/3] repos de codigo de ejemplo")
             for nombre, contenido in REPOS_DESTINO.items():
                 ficheros = {
                     f"/{fichero}": (valor.read_text() if isinstance(valor, Path) else valor)
@@ -232,8 +281,9 @@ def main() -> None:
                               "chore: commit inicial del repo de ejemplo (sin pipeline todavia)")
 
             print("\n[listo] Escenario sembrado. Comprueba con: .venv/bin/python -m ado.humo")
-            print("[nota]  Los destinos NO tienen azure-pipelines.yml a proposito: eso es lo que")
-            print("        el flujo de la PoC tiene que anadir via Pull Request.")
+            print("[nota]  Falta a proposito todo lo que el flujo de la PoC tiene que generar:")
+            print(f"        - {nombre_pipelines}/<repo>/azure-pipelines.yml")
+            print("        - <repo-de-codigo>/vars/{common,dev,acc,pro}.yml")
 
         except ErrorAdo as error:
             print(f"\n[FALLO] {error}", file=sys.stderr)
