@@ -19,32 +19,12 @@ suyo). Cuanto mas estrecho es el trabajo, menos hay que adivinar.
 
 Ejecuta con: .venv/bin/python -m requisitos.agente_extractor
 """
-import json
-import os
-import re
 from typing import Any, Callable
 
-from pydantic import BaseModel, ConfigDict, ValidationError
+from pydantic import BaseModel, ConfigDict
 
-from llm.cliente import construir_cliente, kwargs_json
+from llm.estructurado import pedir_json
 from requisitos.esquema import DESCRIPCIONES, Requisitos
-
-MAX_INTENTOS = 2
-
-# Presupuesto de tokens por turno. Alto a proposito: qwen3.5 es un modelo de
-# RAZONAMIENTO y gasta ~1500 tokens pensando ANTES de escribir la respuesta.
-# Con 2000 se quedaba sin presupuesto a mitad del razonamiento y devolvia
-# content="" con finish_reason="length" -- comprobado en real. Se probaron las
-# dos formas documentadas de apagar el razonamiento con este modelo en LM Studio,
-# extra_body={"chat_template_kwargs": {"enable_thinking": false}} y el sufijo
-# "/no_think" en el mensaje: LAS DOS SE IGNORAN. Asi que se paga el presupuesto.
-#
-# 8000 y no mas: subirlo a 16000 hizo que LM Studio recargara el modelo a mitad
-# de peticion y acabara crasheandolo ("The model has crashed", exit code null),
-# casi seguro por pasarse del contexto cargado. 8000 es el valor con el que hay
-# una conversacion completa funcionando de principio a fin.
-MAX_TOKENS = int(os.environ.get("LLM_MAX_TOKENS", "8000"))
-
 
 class PropuestaTurno(BaseModel):
     """Lo que el modelo tiene permitido devolver. Nada mas.
@@ -103,22 +83,6 @@ def _estado_para_prompt(requisitos: Requisitos, faltan: list[str], recomendados:
     )
 
 
-def _texto_a_json(crudo: str) -> dict:
-    """Limpieza DETERMINISTA de la respuesta antes de parsearla.
-
-    Dos artefactos de formato, no alucinaciones, que conviene tolerar porque no
-    aportan nada al error y son muy frecuentes:
-      - bloques <think>...</think> de los modelos con razonamiento (qwen3 los emite).
-      - vallas de markdown ```json ... ```
-    Lo que NO se tolera es un JSON mal formado o con claves de mas: eso si es un
-    problema del modelo y tiene que provocar el reintento.
-    """
-    texto = re.sub(r"<think>.*?</think>", "", crudo, flags=re.DOTALL).strip()
-    if texto.startswith("```"):
-        texto = re.sub(r"^```[a-zA-Z]*\n?|\n?```$", "", texto).strip()
-    return json.loads(texto)
-
-
 def proponer(
     historial: list[dict],
     requisitos: Requisitos,
@@ -135,8 +99,6 @@ def proponer(
     hablar con un modelo y reintentar, pero NO sabe que es un requisito valido.
     Esa decision vive en requisitos/esquema.py, que no depende de ningun LLM.
     """
-    cliente, modelo = construir_cliente()
-
     # EL ESTADO VA EN EL SYSTEM, NO COMO ULTIMO MENSAJE.
     #
     # La primera version lo ponia detras del historial, como un mensaje de
@@ -144,82 +106,20 @@ def proponer(
     # estado, asi que respondia AL BLOQUE y no a lo que acababa de decir la
     # persona, cuyas palabras quedaban enterradas en el historial. Medido con
     # los dos ordenes y el mismo turno ("el repo se llama demo-servicio-jaba"):
-    #   estado al final -> {"tecnologia": "java"}                    (ignora al usuario)
+    #   estado al final  -> {"tecnologia": "java"}                     (ignora al usuario)
     #   estado en system -> {"tecnologia": "java", "repo_codigo": ...} (correcto)
     # Un modelo de 9B lo toleraba y uno de 4B no, que es la peor clase de bug:
     # el que no se ve hasta que cambias de modelo.
     #
     # Contrapartida conocida: el system cambia en cada turno, asi que no se
     # cachea el prefijo. Con un modelo local da igual; si algun dia el backend
-    # es de pago, conviene mover el estado a un mensaje intermedio y dejar el
-    # system fijo.
+    # es de pago, conviene mover el estado a un mensaje intermedio.
     mensajes = [
         {"role": "system", "content": _instrucciones() + "\n\n"
          + _estado_para_prompt(requisitos, faltan, recomendados)},
         *historial,
     ]
-
-    for intento in range(1, MAX_INTENTOS + 1):
-        respuesta = cliente.chat.completions.create(
-            model=modelo, messages=mensajes, max_tokens=MAX_TOKENS, **kwargs_json()
-        )
-        eleccion = respuesta.choices[0]
-        crudo = eleccion.message.content or ""
-
-        # Diagnostico especifico ANTES de intentar parsear. Un modelo de
-        # razonamiento que agota el presupuesto pensando devuelve content=""
-        # con finish_reason="length", y el razonamiento en un campo aparte. Sin
-        # esta rama el sintoma era "JSON invalido: Expecting value line 1
-        # column 1", que manda a mirar el prompt cuando el problema es el
-        # presupuesto. Mismo patron que el 401 de rutas mal formadas en ADO: el
-        # fallo no se parece a lo que es.
-        #
-        # SI se reintenta, al contrario de lo que decia la primera version de
-        # este comentario. Se escribio "reintentar daria exactamente lo mismo",
-        # y es falso: el modelo es estocastico. Medido con qwen3.5-9b y el mismo
-        # prompt, el razonamiento oscilo entre 1518 tokens (respondio bien) y
-        # mas de 8000 (se quedo sin presupuesto). Precisamente por ser aleatorio,
-        # un segundo intento -- y mas con la instruccion de no extenderse -- suele
-        # salir. Solo si el ultimo intento tambien se agota se da por perdido.
-        if not crudo.strip() and eleccion.finish_reason == "length":
-            razono = getattr(eleccion.message, "reasoning_content", None)
-            motivo = (
-                f"el modelo agoto los {MAX_TOKENS} tokens "
-                f"{'razonando' if razono else 'generando'} y no llego a responder"
-            )
-            if intento == MAX_INTENTOS:
-                raise RuntimeError(
-                    f"{motivo} (tras {MAX_INTENTOS} intentos). Sube LLM_MAX_TOKENS en .env, "
-                    "o usa un modelo sin razonamiento: este comportamiento es aleatorio y con "
-                    "un modelo de razonamiento local puede repetirse."
-                )
-            mensajes.append({
-                "role": "user",
-                "content": "Te has quedado sin presupuesto de tokens antes de responder. "
-                           "Responde AHORA directamente con el JSON, sin razonar en profundidad.",
-            })
-            continue
-
-        try:
-            propuesta = PropuestaTurno(**_texto_a_json(crudo))
-            if validar:
-                validar(propuesta)
-            return propuesta
-        except (json.JSONDecodeError, ValidationError, ValueError) as error:
-            if intento == MAX_INTENTOS:
-                raise RuntimeError(
-                    f"el modelo no devolvio una propuesta valida tras {MAX_INTENTOS} intentos: {error}"
-                ) from error
-            # Reintento con el error EXACTO como mensaje nuevo: el modelo ve por
-            # que fallo, no solo que fallo. Es el patron de T1.2 de poc-agentes.
-            mensajes.append({"role": "assistant", "content": crudo})
-            mensajes.append({
-                "role": "user",
-                "content": f"Tu respuesta no es valida: {error}\nCorrigela y responde SOLO con el JSON.",
-            })
-
-    raise AssertionError("inalcanzable")
-
+    return pedir_json(mensajes, PropuestaTurno, validar=validar)
 
 if __name__ == "__main__":
     from dotenv import load_dotenv

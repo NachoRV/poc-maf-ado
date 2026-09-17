@@ -9,7 +9,28 @@ Continúa la bitácora de `poc-agentes` (sesiones 1–4, hasta 2026-09-12), que 
 ## Sesión 1 — 2026-09-16
 
 ### Por dónde retomar
-**Siguiente: T3.2 — selección de plantilla híbrida** (`seleccion/reglas.py` + `seleccion/agente_hibrido.py`). El nodo `seleccionando_plantilla` es hoy provisional: solo mapea `tecnologia → arquetipo → applies_to` y devuelve `None` si no hay exactamente una candidata. Falta la tabla de reglas real y el LLM de respaldo (lista cerrada, salida estructurada, reintento, umbral 0.7).
+**Siguiente: T3.3 — parámetros** (`parametros/agente_generador.py`). Derivar de forma determinista todo lo que el `Requisitos` ya fija (vía `derived_from` del manifest) y pedirle al LLM **solo los huecos**, validando contra el `parameters.schema.json` real (`ado.catalogo.leer_schema`). Criterio: con requisitos completos el modelo no se llama ni una vez. Después T3.4 (variables por entorno con merge no destructivo).
+
+### T3.2 completada (selección de plantilla híbrida)
+`seleccion/reglas.py` (determinista) + `seleccion/agente_hibrido.py` (el desempate).
+
+**Las reglas traducen requisito → ARQUETIPO, no requisito → plantilla.** El arquetipo es un concepto del dominio; la plantilla es un artefacto que puede versionarse o desdoblarse. Y las candidatas salen de comparar el arquetipo contra el `applies_to` de las plantillas **descubiertas en ADO** — añadir una plantilla es un PR al repo de plantillas, este fichero no se toca.
+
+**Tres barandillas en el desempate:** lista cerrada (sale del catálogo real, un id fuera cuenta como respuesta inválida), salida estructurada con reintento, y umbral 0.7 aplicado **después** de tener una respuesta válida. Más minimización de contexto: al modelo le llega `resumen_para_llm()`, no el manifest entero.
+
+**Verificado, los tres caminos:**
+- Caso real → `decidido` por reglas, **0 llamadas al modelo**.
+- Catálogo fabricado con dos plantillas para el mismo arquetipo → entra el LLM, elige `ci-java-container` con confianza 0.95 y explicación.
+- El mismo caso con umbral 0.99 → `requiere_revision_humana`. Es el criterio exacto del plan.
+
+**Dato honesto:** con el catálogo actual (tres arquetipos, una plantilla cada uno) y `tecnologia` siendo slot bloqueante, **las reglas deciden siempre**. El camino del LLM no es decorado —es lo que hará falta cuando dos plantillas compitan— pero hoy no se dispara con datos reales. Dicho en el propio docstring, en vez de fingir ambigüedad.
+
+**`llm/estructurado.py` (nuevo):** se extrae el patrón pedir-JSON + limpiar + validar + reintentar al aparecer el **segundo** consumidor, mismo criterio que se usó para `ado/git.py`. `agente_extractor.py` migrado; el patrón ya no está duplicado.
+
+### Bug del verificador de convención: el defecto estaba del lado inseguro
+Al añadir `llm/estructurado.py`, `comprobar_agentes.py` pasó a reportar **CERO agentes sin dar ningún error**. La regla enumeraba las funciones que "sí construyen cliente" (`construir_cliente`, `kwargs_json`), y en cuanto nadie las importó directamente la detección se cayó en silencio.
+
+**Invertido:** ahora es una lista de **excepciones** (`SOLO_OBSERVABILIDAD = {llamadas_al_modelo, reiniciar_contador}`) y todo lo demás de `llm/` cuenta. Añadir algo nuevo a `llm/` marca a sus usuarios como agentes hasta que alguien decida lo contrario a propósito. **El defecto tiene que fallar del lado seguro.** Detección restaurada: 5 agentes.
 
 ### La conversación entra DENTRO del flujo (petición del usuario)
 El usuario señaló que T3.1 ejecutaba todo de golpe sin pedirle nada: el flujo arrancaba con `Requisitos` ya confirmados y la conversación vivía fuera. Estaba dicho, pero era una decisión discutible y el plan la aparcaba hasta el Bloque 5. **Adelantada y hecha.**

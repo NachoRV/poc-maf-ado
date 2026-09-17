@@ -28,18 +28,25 @@ PREFIJO = "agente_"
 PAQUETE_INFRAESTRUCTURA = "llm"
 IGNORAR = (".venv", "__pycache__")
 
-# Importar de `llm/` no es lo mismo que llamar al modelo. `llamadas_al_modelo` y
-# `reiniciar_contador` son OBSERVABILIDAD: orquestacion/agente_flujo.py las usa para
-# informar de cuantas llamadas hubo, y una ejecucion suya mide cero. Solo estas
-# dos funciones construyen algo con lo que se pueda llamar de verdad.
-CONSTRUYEN_CLIENTE = {"construir_cliente", "kwargs_json"}
+# Importar de `llm/` no es lo mismo que llamar al modelo: `llamadas_al_modelo` y
+# `reiniciar_contador` son OBSERVABILIDAD, y quien solo las use mide cero
+# llamadas en sus ejecuciones.
+#
+# Es una LISTA DE EXCEPCIONES, no una lista de "las que si llaman", y el sentido
+# importa. La primera version lo tenia al reves (enumeraba construir_cliente y
+# kwargs_json) y se rompio en silencio en cuanto se anadio llm/estructurado.py:
+# nadie importaba ya esos dos nombres, asi que el verificador paso a reportar
+# CERO agentes sin dar ningun error. Con el defecto invertido, anadir algo nuevo
+# a `llm/` marca a sus usuarios como agentes hasta que alguien decida lo
+# contrario a proposito. El defecto tiene que fallar del lado seguro.
+SOLO_OBSERVABILIDAD = {"llamadas_al_modelo", "reiniciar_contador"}
 
 
 def modulos() -> dict[str, set[str]]:
     """{modulo: lo que importa}, para todo el codigo del proyecto.
 
-    De `llm/` solo se anotan los imports que construyen un cliente; traerse el
-    contador no cuenta (ver CONSTRUYEN_CLIENTE).
+    De `llm/` se anota todo salvo los imports puramente de observabilidad
+    (ver SOLO_OBSERVABILIDAD).
     """
     encontrados = {}
     for fichero in sorted(Path(".").rglob("*.py")):
@@ -49,7 +56,7 @@ def modulos() -> dict[str, set[str]]:
         for nodo in ast.walk(ast.parse(fichero.read_text())):
             if isinstance(nodo, ast.ImportFrom) and nodo.module:
                 if nodo.module.split(".")[0] == PAQUETE_INFRAESTRUCTURA:
-                    if not any(a.name in CONSTRUYEN_CLIENTE for a in nodo.names):
+                    if all(a.name in SOLO_OBSERVABILIDAD for a in nodo.names):
                         continue
                 importados.add(nodo.module)
             elif isinstance(nodo, ast.Import):

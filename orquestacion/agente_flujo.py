@@ -52,6 +52,8 @@ from ado.cliente import ClienteAdo
 from ado.destinos import Inventario, inventario
 from llm.cliente import llamadas_al_modelo, reiniciar_contador
 from orquestacion.estados import PASOS, Estado, Naturaleza
+from seleccion.agente_hibrido import seleccionar
+from seleccion.reglas import EstadoSeleccion
 from requisitos.agente_recolector import YA_ESTA, Sesion
 from requisitos.confirmacion import Veredicto, interpretar
 from requisitos.esquema import Requisitos, descripcion, slots_recomendados_vacios
@@ -193,18 +195,20 @@ async def descubrir_catalogo(ctx_flujo: Contexto, ctx: WorkflowContext[Contexto]
     await ctx.send_message(ctx_flujo.paso(Estado.DESCUBRIENDO_CATALOGO, plantillas=plantillas))
 
 
-# Arquetipo que implica cada tecnologia. Provisional: T3.2 lo sustituye por la
-# tabla de reglas real mas el LLM de respaldo cuando 0 o >1 plantillas encajen.
-ARQUETIPO_POR_TECNOLOGIA = {"java": "java-container", "dotnet": "dotnet-service", "node": "node-container"}
-
-
 @executor(id=Estado.SELECCIONANDO_PLANTILLA)
 async def seleccionar_plantilla(ctx_flujo: Contexto, ctx: WorkflowContext[Contexto]) -> None:
-    """HIBRIDO (hoy solo la mitad determinista; el LLM de respaldo es T3.2)."""
-    arquetipo = ARQUETIPO_POR_TECNOLOGIA.get(ctx_flujo.requisitos.tecnologia or "")
-    candidatas = [p for p in ctx_flujo.plantillas if arquetipo in p.applies_to]
-    elegida = candidatas[0] if len(candidatas) == 1 else None
-    await ctx.send_message(ctx_flujo.paso(Estado.SELECCIONANDO_PLANTILLA, plantilla=elegida))
+    """HIBRIDO (T3.2). Reglas primero; el LLM SOLO si hay empate o nada encaja.
+
+    Ya no es el mapeo provisional de T3.1: delega en seleccion/agente_hibrido.py,
+    que con el catalogo real resuelve por reglas y no gasta ni una llamada.
+    """
+    resultado = seleccionar(ctx_flujo.requisitos, ctx_flujo.plantillas)
+    print(f"  [seleccion] {resultado.resumen()}")
+    if resultado.razonamiento:
+        print(f"  [seleccion] {resultado.razonamiento}")
+    await ctx.send_message(
+        ctx_flujo.paso(Estado.SELECCIONANDO_PLANTILLA, plantilla=resultado.plantilla)
+    )
 
 
 @executor(id=Estado.PLANIFICANDO_CAMBIOS)

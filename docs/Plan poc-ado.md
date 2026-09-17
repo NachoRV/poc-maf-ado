@@ -346,7 +346,7 @@ Cuando no faltan slots, se le muestra al usuario el `Requisitos` completo en tex
 
 # Bloque 3 · La orquestación como máquina de estados (4 h)
 
-## T3.1 — Estados y transiciones explícitos
+## T3.1 — Estados y transiciones explícitos  ✅
 `orquestacion/estados.py`: un `Enum` con los estados del diagrama y, al lado de cada uno, **declarado en el código, no en un comentario**, si es determinista, LLM o híbrido, y quién lo consume.
 
 ```python
@@ -378,7 +378,7 @@ Consecuencia de diseño que va más allá de la comodidad: quien reanuda puede s
 
 **Criterio de éxito:** una ejecución imprime la secuencia de estados recorridos con su naturaleza al lado, y el recuento de llamadas al LLM.
 
-## T3.2 — Selección de plantilla híbrida
+## T3.2 — Selección de plantilla híbrida  ✅
 `seleccion/reglas.py` + `seleccion/hibrido.py`. Reglas sobre `Requisitos` contra el `applies_to` de los manifests **descubiertos en ADO** (no una lista hardcodeada). Tres estados como antes: `decidido` / `ambiguo` / `desconocido`. El LLM entra solo en los dos últimos, con la lista cerrada de ids del catálogo real, salida estructurada, reintento y umbral 0.7.
 
 **Criterio de éxito:** `tecnologia: "java"` + `contenedor: true` resuelve por reglas con cero llamadas al modelo. Un requisito raro (`notas: "es un monorepo con Java y Node"`, `tecnologia` incierta) baja por la rama del LLM, y con umbral 0.99 escala a revisión humana.
