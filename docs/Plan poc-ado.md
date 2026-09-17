@@ -365,7 +365,16 @@ Suena a burocracia y es la mitad del valor del ejercicio: con ese diccionario pu
 
 `orquestacion/flujo.py`: el workflow con MAF (`WorkflowBuilder`, un nodo por estado, transiciones condicionadas), igual que `agente_workflow.py` pero con un objeto de estado compartido en vez de un mensaje que se va transformando.
 
-**Aviso de diseño, verifícalo pronto:** el workflow en grafo de la PoC anterior es un DAG de un solo disparo — entra un mensaje, sale un resultado. Este flujo necesita **pausar y esperar al humano** en tres sitios (recogida de requisitos, confirmación de plantilla, confirmación de push). MAF tiene mecanismos de human-in-the-loop y de checkpointing, pero los nombres exactos de la API han ido cambiando durante el preview: **confirma contra la versión instalada antes de diseñar alrededor de ellos.** Si no encajan, el plan B es honesto y sirve igual: la máquina de estados avanza un paso por llamada y el bucle de `chat.py` la va empujando. Es menos elegante y más fácil de depurar.
+**RESUELTO el 2026-09-17, verificado contra `agent-framework-core 1.18.0`.** El plan avisaba de que el workflow en grafo de `poc-agentes` era un DAG de un disparo y que este flujo necesita pausar y esperar al humano en tres sitios, y dejaba escrito un plan B. **No hace falta: MAF tiene human-in-the-loop de primera clase.**
+
+El mecanismo, comprobado con un ejemplo mínimo antes de construir encima:
+- Un nodo llama a `await ctx.request_info(datos, tipo_respuesta)` y el workflow **se suspende**: la ejecución termina en `WorkflowRunState.IDLE_WITH_PENDING_REQUESTS` sin haber hecho nada más.
+- Fuera se leen las peticiones con `resultado.get_request_info_events()` (traen `request_id` y `data`).
+- Se reanuda con `workflow.run(responses={request_id: valor}, checkpoint_storage=...)`, y la respuesta entra por el método marcado con `@response_handler(peticion, respuesta, ctx)`.
+
+**`RequestInfoExecutor` —lo que dice la documentación antigua— NO existe en esta versión.** Confirmar contra la versión instalada antes de fiarse de cualquier ejemplo de blog sigue siendo la regla.
+
+Consecuencia de diseño que va más allá de la comodidad: quien reanuda puede ser **otro proceso, otro día**, leyendo el checkpoint. "Nada se escribe sin un sí" pasa de ser una convención del código a una garantía estructural.
 
 **Criterio de éxito:** una ejecución imprime la secuencia de estados recorridos con su naturaleza al lado, y el recuento de llamadas al LLM.
 

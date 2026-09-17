@@ -9,7 +9,42 @@ Continúa la bitácora de `poc-agentes` (sesiones 1–4, hasta 2026-09-12), que 
 ## Sesión 1 — 2026-09-16
 
 ### Por dónde retomar
-**Bloque 2 completo.** Siguiente: **T3.1 — estados y transiciones explícitos** (`orquestacion/estados.py` + `flujo.py`). Declarar en código, no en un comentario, si cada estado es determinista, LLM o híbrido, y expresar el flujo como máquina de estados. Ahí es donde entra MAF, y donde hay que confirmar contra la versión instalada si su human-in-the-loop sirve para las tres pausas del flujo (recogida, confirmación de plantilla, confirmación de push) — el plan B (avanzar un paso por llamada, empujado desde el chat) ya está escrito en T3.1.
+**Siguiente: T3.2 — selección de plantilla híbrida** (`seleccion/reglas.py` + `seleccion/agente_hibrido.py`). El nodo `seleccionando_plantilla` de `orquestacion/flujo.py` es hoy **provisional**: solo hace el mapeo `tecnologia → arquetipo → applies_to` y devuelve `None` si no hay exactamente una candidata. T3.2 le pone la tabla de reglas real y el LLM de respaldo con lista cerrada, salida estructurada, reintento y umbral 0.7. Al ser un agente, el fichero lleva prefijo: `seleccion/agente_hibrido.py`.
+
+### T3.1 completada (la orquestación como máquina de estados)
+**El hallazgo que invalida el plan B del plan: MAF 1.18.0 tiene human-in-the-loop de primera clase.** Verificado con un ejemplo mínimo *antes* de construir nada encima:
+
+| Pieza | Qué hace |
+|---|---|
+| `await ctx.request_info(datos, tipo)` | **suspende** el workflow |
+| `WorkflowRunState.IDLE_WITH_PENDING_REQUESTS` | el estado en que queda |
+| `resultado.get_request_info_events()` | las peticiones pendientes (`request_id`, `data`) |
+| `workflow.run(responses={id: valor}, checkpoint_storage=...)` | **reanuda** |
+| `@response_handler(peticion, respuesta, ctx)` | por donde entra la respuesta |
+
+**`RequestInfoExecutor` NO existe en esta versión** — era un recuerdo obsoleto de la documentación. La regla de no fiarse de la memoria sobre MAF sigue pagando.
+
+Consecuencia que va más allá de la comodidad: quien reanuda puede ser **otro proceso, otro día**, leyendo el checkpoint. "Nada se escribe sin un sí" deja de ser una convención y pasa a ser estructural.
+
+**`orquestacion/estados.py`** (puro, no importa MAF ni el LLM ni ADO): 16 estados con su naturaleza declarada **en código**. Cuatro naturalezas y no dos, porque "determinista vs LLM" se queda corto: `HIBRIDO` (reglas primero, modelo solo si no deciden) y `HUMANO` (el flujo se suspende) describen cosas distintas. La tabla markdown se **genera** desde el diccionario, así que no puede quedarse desactualizada. Reparto declarado: **10 deterministas, 2 híbridos, 2 LLM, 2 humanos**.
+
+**`llm/cliente.py` cuenta las llamadas envolviendo al cliente**, no pidiéndole a cada agente que se instrumente: así es imposible añadir un agente nuevo y olvidarse de contarlo. Y el defecto del código pasó de `qwen/qwen3.5-9b` a `google/gemma-3-4b` — seguía siendo el viejo, tapado por el `.env`.
+
+**`orquestacion/flujo.py`:** el mensaje ES el estado. Un `Contexto` (Pydantic) viaja por el grafo y cada nodo devuelve una **copia** con su marca en `traza` — nada de variables globales entre nodos, así la secuencia recorrida es un dato del resultado y no un efecto secundario de unos prints. Única excepción acotada y comentada: el `ClienteAdo`, que no es serializable y por tanto no puede viajar en el mensaje.
+
+**Verificado en real, los dos caminos** (sí → `completado`, no → `cancelado`), contra ADO de verdad:
+```
+determinista  descubriendo_catalogo
+hibrido       seleccionando_plantilla
+determinista  planificando_cambios
+humano        confirmando_push
+determinista  completado
+reparto: determinista=3  hibrido=1  humano=1
+llamadas reales al modelo: 0
+```
+**Cero llamadas al modelo** en un recorrido completo desde requisitos confirmados hasta la puerta humana. Medido por el contador, no estimado.
+
+**Alcance honesto:** el flujo arranca con `Requisitos` **ya confirmados** — la conversación multiturno vive fuera (`requisitos/agente_recolector.py`) y se conecta en el Bloque 5. Los nodos de selección y parámetros son provisionales hasta T3.2/T3.3: están **declarados y marcados como tales**, no ocultos.
 
 ### T2.3 completada — Bloque 2 cerrado
 `requisitos/confirmacion.py` (**determinista, sin prefijo**) + `conversar()` en `agente_recolector.py`.

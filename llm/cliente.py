@@ -48,6 +48,34 @@ def backend_activo() -> str:
     return os.environ.get("MODEL_BACKEND", BACKEND_POR_DEFECTO)
 
 
+# Contador de llamadas reales al modelo. Se incrementa envolviendo el metodo del
+# cliente, no pidiendole a cada llamante que se instrumente: asi es IMPOSIBLE que
+# alguien anada un agente nuevo y se olvide de contarlo, y el "de 16 estados solo
+# N tocan el modelo" pasa de ser una afirmacion a un dato medido por ejecucion.
+_LLAMADAS = 0
+
+
+def llamadas_al_modelo() -> int:
+    return _LLAMADAS
+
+
+def reiniciar_contador() -> None:
+    global _LLAMADAS
+    _LLAMADAS = 0
+
+
+def _contando(cliente: OpenAI) -> OpenAI:
+    original = cliente.chat.completions.create
+
+    def create(*args, **kwargs):
+        global _LLAMADAS
+        _LLAMADAS += 1
+        return original(*args, **kwargs)
+
+    cliente.chat.completions.create = create  # type: ignore[method-assign]
+    return cliente
+
+
 def construir_cliente() -> tuple[OpenAI, str]:
     """Devuelve (cliente, nombre_del_modelo). Ambos backends hablan el mismo
     protocolo OpenAI, asi que quien llama no se entera de cual esta usando."""
@@ -55,14 +83,18 @@ def construir_cliente() -> tuple[OpenAI, str]:
 
     if backend == "lmstudio":
         return (
-            OpenAI(
+            _contando(OpenAI(
                 # LM Studio no valida la key, pero el SDK exige un string.
                 api_key="lm-studio",
                 base_url=os.environ.get("LM_STUDIO_BASE_URL", "http://localhost:1234/v1"),
                 timeout=TIMEOUT,
                 max_retries=MAX_REINTENTOS_HTTP,
-            ),
-            os.environ.get("LM_STUDIO_MODEL", "qwen/qwen3.5-9b"),
+            )),
+            # Por defecto un modelo SIN razonamiento. qwen3.5-9b estuvo aqui y
+            # fue un error: gastaba ~1500 tokens pensando por cada respuesta de
+            # 130 caracteres, y las dos formas documentadas de apagarlo en LM
+            # Studio se ignoran.
+            os.environ.get("LM_STUDIO_MODEL", "google/gemma-3-4b"),
         )
 
     if backend == "gemini":
@@ -70,12 +102,12 @@ def construir_cliente() -> tuple[OpenAI, str]:
         if not clave:
             raise ValueError("MODEL_BACKEND=gemini pero GEMINI_API_KEY esta vacia en .env")
         return (
-            OpenAI(
+            _contando(OpenAI(
                 api_key=clave,
                 base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
                 timeout=TIMEOUT,
                 max_retries=MAX_REINTENTOS_HTTP,
-            ),
+            )),
             os.environ.get("GEMINI_MODEL", "gemini-2.5-flash"),
         )
 
