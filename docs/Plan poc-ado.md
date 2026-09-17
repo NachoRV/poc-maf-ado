@@ -363,7 +363,7 @@ NATURALEZA = {
 
 Suena a burocracia y es la mitad del valor del ejercicio: con ese diccionario puedes imprimir automáticamente la tabla de arriba, contar cuántas llamadas a LLM hizo una ejecución concreta, y enseñar en la reunión un dato medido en vez de una afirmación.
 
-`orquestacion/flujo.py`: el workflow con MAF (`WorkflowBuilder`, un nodo por estado, transiciones condicionadas), igual que `agente_workflow.py` pero con un objeto de estado compartido en vez de un mensaje que se va transformando.
+`orquestacion/agente_flujo.py`: el workflow con MAF (`WorkflowBuilder`, un nodo por estado, transiciones condicionadas), igual que `agente_workflow.py` pero con un objeto de estado compartido en vez de un mensaje que se va transformando.
 
 **RESUELTO el 2026-09-17, verificado contra `agent-framework-core 1.18.0`.** El plan avisaba de que el workflow en grafo de `poc-agentes` era un DAG de un disparo y que este flujo necesita pausar y esperar al humano en tres sitios, y dejaba escrito un plan B. **No hace falta: MAF tiene human-in-the-loop de primera clase.**
 

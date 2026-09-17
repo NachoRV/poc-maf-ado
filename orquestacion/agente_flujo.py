@@ -32,7 +32,7 @@ conversacion multiturno vive fuera, en requisitos/agente_recolector.py, y se
 conectara en el Bloque 5. Los nodos de seleccion y parametros son provisionales
 hasta T3.2/T3.3; estan declarados y marcados como tales, no ocultos.
 
-Ejecuta con (desde la raiz del repo): .venv/bin/python -m orquestacion.flujo
+Ejecuta con (desde la raiz del repo): .venv/bin/python -m orquestacion.agente_flujo
 """
 import asyncio
 
@@ -52,7 +52,9 @@ from ado.cliente import ClienteAdo
 from ado.destinos import Inventario, inventario
 from llm.cliente import llamadas_al_modelo, reiniciar_contador
 from orquestacion.estados import PASOS, Estado, Naturaleza
-from requisitos.esquema import Requisitos
+from requisitos.agente_recolector import YA_ESTA, Sesion
+from requisitos.confirmacion import Veredicto, interpretar
+from requisitos.esquema import Requisitos, descripcion, slots_recomendados_vacios
 
 # El cliente de ADO no puede viajar dentro del mensaje: el Contexto se serializa
 # para el checkpointing y un cliente HTTP no es serializable. Se deja aqui, lo
@@ -84,6 +86,104 @@ class Contexto(BaseModel):
         que los nodos no muten el mensaje que reciben es lo que hace que la traza
         sea fiable."""
         return self.model_copy(update={"traza": [*self.traza, estado], **cambios})
+
+
+FASE_RECOGIENDO = "recogiendo"
+FASE_CONFIRMANDO = "confirmando"
+
+
+class RecogerRequisitos(Executor):
+    """LLM + HUMANO. La conversacion, conducida DESDE DENTRO del flujo.
+
+    Aqui esta la diferencia tecnica que importa frente a `conversar()` de
+    requisitos/agente_recolector.py, que hace lo mismo fuera:
+
+        fuera  -> un BUCLE. Llama a input(), no puede suspenderse, y por tanto
+                  solo sirve en un proceso que este vivo todo el rato.
+        dentro -> una MAQUINA DE ESTADOS. Cada turno termina con request_info,
+                  el workflow se suspende y el estado sobrevive en el checkpoint.
+                  Quien conteste el turno 4 puede ser otro proceso.
+
+    La logica de negocio NO se duplica: las dos usan `Sesion.responder()`. Lo
+    unico que cambia es el conductor. Es el mismo patron que en poc-agentes,
+    donde el workflow de MAF y el pipeline a mano eran dos interfaces sobre la
+    misma logica.
+
+    El estado del dialogo (requisitos a medias, historial, fase) vive en
+    ctx.set_state, no en atributos del executor: los atributos no sobreviven a
+    una reanudacion desde checkpoint.
+    """
+
+    @handler
+    async def empezar(self, arranque: Contexto, ctx: WorkflowContext[Contexto]) -> None:
+        self._guardar(ctx, Sesion(requisitos=arranque.requisitos))
+        ctx.set_state("fase", FASE_RECOGIENDO)
+        await ctx.request_info("¿Que pipeline necesitas?", str)
+
+    @response_handler
+    async def turno(self, peticion: str, respuesta: str, ctx: WorkflowContext[Contexto]) -> None:
+        sesion = Sesion(
+            requisitos=Requisitos(**ctx.get_state("requisitos")),
+            historial=list(ctx.get_state("historial")),
+            cliente_ado=_ado(),
+        )
+
+        if ctx.get_state("fase") == FASE_CONFIRMANDO:
+            await self._resolver_confirmacion(sesion, respuesta, ctx)
+            return
+
+        # -- fase de recogida --
+        if sesion.completo and respuesta.strip().lower() in YA_ESTA:
+            await self._pedir_confirmacion(sesion, ctx)
+            return
+
+        pregunta = sesion.responder(respuesta)
+        self._guardar(ctx, sesion)
+
+        if pregunta is None:
+            await self._pedir_confirmacion(sesion, ctx)
+        elif sesion.completo:
+            await ctx.request_info(f"{pregunta}\n    (o escribe 'listo' si ya esta bien asi)", str)
+        else:
+            await ctx.request_info(pregunta, str)
+
+    async def _resolver_confirmacion(self, sesion: Sesion, respuesta: str, ctx) -> None:
+        veredicto = interpretar(respuesta)  # determinista: un "si" no cuesta una llamada
+
+        if veredicto is Veredicto.CONFIRMA:
+            # Los dos estados de conversacion se marcan aqui, al salir: la traza
+            # tiene que reflejar por donde paso de verdad la ejecucion.
+            await ctx.send_message(
+                Contexto(requisitos=sesion.requisitos).paso(Estado.RECOGIENDO_REQUISITOS)
+                .paso(Estado.CONFIRMANDO_REQUISITOS)
+            )
+            return
+
+        if veredicto is Veredicto.RECHAZA:
+            ctx.set_state("fase", FASE_RECOGIENDO)
+            await ctx.request_info("¿Que quieres cambiar?", str)
+            return
+
+        # CORRIGE: lleva informacion, asi que es un turno normal. Y se vuelve a
+        # confirmar -- una correccion nunca da los datos por buenos.
+        sesion.responder(respuesta)
+        self._guardar(ctx, sesion)
+        await self._pedir_confirmacion(sesion, ctx)
+
+    async def _pedir_confirmacion(self, sesion: Sesion, ctx) -> None:
+        ctx.set_state("fase", FASE_CONFIRMANDO)
+        vacios = slots_recomendados_vacios(sesion.requisitos)
+        aviso = f"\n    Ojo: {', '.join(vacios)} sin definir; si sigues lo decidira el modelo." if vacios else ""
+        await ctx.request_info(
+            f"Esto es lo que he entendido:\n{descripcion(sesion.requisitos)}{aviso}"
+            "\n    ¿Lo confirmas? (si / no / dime que cambiar)",
+            str,
+        )
+
+    @staticmethod
+    def _guardar(ctx, sesion: Sesion) -> None:
+        ctx.set_state("requisitos", sesion.requisitos.model_dump())
+        ctx.set_state("historial", sesion.historial)
 
 
 @executor(id=Estado.DESCUBRIENDO_CATALOGO)
@@ -146,9 +246,11 @@ class ConfirmarPush(Executor):
 
 
 def construir_workflow() -> tuple:
+    recoger = RecogerRequisitos(id=Estado.RECOGIENDO_REQUISITOS)
     confirmar = ConfirmarPush(id=Estado.CONFIRMANDO_PUSH)
     workflow = (
-        WorkflowBuilder(start_executor=descubrir_catalogo)
+        WorkflowBuilder(start_executor=recoger)
+        .add_edge(recoger, descubrir_catalogo)
         .add_edge(descubrir_catalogo, seleccionar_plantilla)
         .add_edge(seleccionar_plantilla, planificar_cambios)
         .add_edge(planificar_cambios, confirmar)
@@ -171,11 +273,14 @@ def informe(traza: list[Estado], llamadas: int) -> str:
     return "\n".join(lineas)
 
 
-async def ejecutar(requisitos: Requisitos, responder_humano) -> Contexto | None:
-    """Arranca el flujo, lo deja pausar en la puerta humana y lo reanuda.
+async def ejecutar(responder_humano) -> Contexto | None:
+    """Conduce el workflow: arranca, y cada vez que se suspende pidiendo algo,
+    lo pregunta y reanuda. Termina cuando ya no pide nada.
 
-    `responder_humano(texto) -> bool` se inyecta para poder guionizar la prueba;
-    en el chat real sera una pregunta por consola.
+    El bucle es generico a proposito: no sabe nada de requisitos ni de
+    confirmaciones. Solo ve "peticiones pendientes" con su `response_type`, y
+    delega en `responder_humano(texto, tipo)`. Anadir una puerta humana nueva en
+    cualquier nodo no obliga a tocar este bucle.
     """
     global _cliente_ado
     reiniciar_contador()
@@ -184,46 +289,56 @@ async def ejecutar(requisitos: Requisitos, responder_humano) -> Contexto | None:
 
     with ClienteAdo.desde_entorno() as cliente:
         _cliente_ado = cliente
+        resultado = await workflow.run(Contexto(requisitos=Requisitos()), checkpoint_storage=almacen)
 
-        resultado = await workflow.run(Contexto(requisitos=requisitos), checkpoint_storage=almacen)
-        print(f"  [workflow] estado tras la primera ejecucion: {resultado.get_final_state()}")
+        vueltas = 0
+        while True:
+            peticiones = resultado.get_request_info_events()
+            if not peticiones:
+                break
+            respuestas = {
+                p.request_id: responder_humano(p.data, p.response_type) for p in peticiones
+            }
+            if any(v is None for v in respuestas.values()):
+                return None  # el humano se fue
+            vueltas += 1
+            resultado = await workflow.run(responses=respuestas, checkpoint_storage=almacen)
 
-        peticiones = resultado.get_request_info_events()
-        if not peticiones:
-            print("  [workflow] no pidio nada al humano (no deberia pasar en este flujo)")
-            return None
-
-        respuestas = {}
-        for peticion in peticiones:
-            print(f"\n  [humano] se le pregunta:\n    {peticion.data}")
-            respuestas[peticion.request_id] = responder_humano(peticion.data)
-            print(f"  [humano] responde: {respuestas[peticion.request_id]}")
-
-        resultado = await workflow.run(responses=respuestas, checkpoint_storage=almacen)
-        print(f"\n  [workflow] estado tras reanudar: {resultado.get_final_state()}")
+        print(f"\n  [workflow] estado final: {resultado.get_final_state()}  "
+              f"(se suspendio y reanudo {vueltas} veces)")
         salidas = resultado.get_outputs()
         return salidas[0] if salidas else None
 
 
 async def main() -> None:
+    """Demostracion guionizada. Para hablar tu: .venv/bin/python agente_chat.py"""
     from dotenv import load_dotenv
 
     load_dotenv()
 
-    requisitos = Requisitos(
-        tecnologia="java", repo_codigo="demo-servicio-java",
-        version_lenguaje="17", contenedor=True, version_app="1.0.0",
-    )
-    print("=== requisitos de entrada (ya confirmados; la conversacion vive fuera) ===")
-    print(f"  {requisitos.model_dump(exclude_none=True)}\n")
+    guion = iter([
+        "necesito una pipeline para un servicio en Java",
+        "el repo es demo-servicio-java",
+        "Java 17, va en Docker, version 1.0.0",
+        "listo",    # corta la recogida de los recomendados y pasa a confirmar
+        "si",       # confirmacion de REQUISITOS -- cero llamadas al modelo
+        "si",       # confirmacion del PUSH -- la puerta antes de escribir
+    ])
 
-    for veredicto, etiqueta in ((True, "el humano dice QUE SI"), (False, "el humano dice QUE NO")):
-        print(f"\n=== {etiqueta} ===")
-        final = await ejecutar(requisitos, lambda _texto: veredicto)
-        if final is None:
-            print("  (sin salida)")
-            continue
-        print(f"\n{informe(final.traza, llamadas_al_modelo())}")
+    def responder(texto: str, tipo: type):
+        print(f"\n  \033[1magente\033[0m: {texto}")
+        try:
+            respuesta = next(guion)
+        except StopIteration:
+            return None
+        print(f"  \033[1mtu\033[0m: {respuesta}")
+        return (interpretar(respuesta) is Veredicto.CONFIRMA) if tipo is bool else respuesta
+
+    final = await ejecutar(responder)
+    if final is None:
+        print("\n  (la conversacion no llego al final)")
+        return
+    print(f"\n{informe(final.traza, llamadas_al_modelo())}")
 
 
 if __name__ == "__main__":

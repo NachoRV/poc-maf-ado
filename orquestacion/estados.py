@@ -6,7 +6,7 @@ mucho si se puede imprimir desde el propio codigo y contrastar con el numero de
 llamadas que hizo una ejecucion concreta.
 
 Este modulo es PURO: no importa MAF, ni el LLM, ni Azure DevOps. Solo declara.
-`orquestacion/flujo.py` es quien lo convierte en un workflow ejecutable. Esa
+`orquestacion/agente_flujo.py` es quien lo convierte en un workflow ejecutable. Esa
 separacion importa -- la tabla tiene que poder leerse y enseñarse sin arrancar
 nada, y tiene que seguir siendo cierta aunque mañana se cambie de framework.
 
@@ -97,7 +97,7 @@ PASOS: dict[Estado, Paso] = {
         "Existe o no existe: add vs edit. Equivocarse es un 400 de ADO.",
     ),
     Estado.CONFIRMANDO_PUSH: Paso(
-        Naturaleza.HUMANO, "orquestacion/flujo.py",
+        Naturaleza.HUMANO, "orquestacion/agente_flujo.py",
         "Ultima puerta antes de escribir en repos reales. Nada se escribe sin un si.",
     ),
     Estado.ESCRIBIENDO_EN_ADO: Paso(

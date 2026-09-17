@@ -29,7 +29,7 @@ PAQUETE_INFRAESTRUCTURA = "llm"
 IGNORAR = (".venv", "__pycache__")
 
 # Importar de `llm/` no es lo mismo que llamar al modelo. `llamadas_al_modelo` y
-# `reiniciar_contador` son OBSERVABILIDAD: orquestacion/flujo.py las usa para
+# `reiniciar_contador` son OBSERVABILIDAD: orquestacion/agente_flujo.py las usa para
 # informar de cuantas llamadas hubo, y una ejecucion suya mide cero. Solo estas
 # dos funciones construyen algo con lo que se pueda llamar de verdad.
 CONSTRUYEN_CLIENTE = {"construir_cliente", "kwargs_json"}

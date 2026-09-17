@@ -9,7 +9,44 @@ Continúa la bitácora de `poc-agentes` (sesiones 1–4, hasta 2026-09-12), que 
 ## Sesión 1 — 2026-09-16
 
 ### Por dónde retomar
-**Siguiente: T3.2 — selección de plantilla híbrida** (`seleccion/reglas.py` + `seleccion/agente_hibrido.py`). El nodo `seleccionando_plantilla` de `orquestacion/flujo.py` es hoy **provisional**: solo hace el mapeo `tecnologia → arquetipo → applies_to` y devuelve `None` si no hay exactamente una candidata. T3.2 le pone la tabla de reglas real y el LLM de respaldo con lista cerrada, salida estructurada, reintento y umbral 0.7. Al ser un agente, el fichero lleva prefijo: `seleccion/agente_hibrido.py`.
+**Siguiente: T3.2 — selección de plantilla híbrida** (`seleccion/reglas.py` + `seleccion/agente_hibrido.py`). El nodo `seleccionando_plantilla` es hoy provisional: solo mapea `tecnologia → arquetipo → applies_to` y devuelve `None` si no hay exactamente una candidata. Falta la tabla de reglas real y el LLM de respaldo (lista cerrada, salida estructurada, reintento, umbral 0.7).
+
+### La conversación entra DENTRO del flujo (petición del usuario)
+El usuario señaló que T3.1 ejecutaba todo de golpe sin pedirle nada: el flujo arrancaba con `Requisitos` ya confirmados y la conversación vivía fuera. Estaba dicho, pero era una decisión discutible y el plan la aparcaba hasta el Bloque 5. **Adelantada y hecha.**
+
+**Verificado antes de construir:** un `@response_handler` **sí puede volver a llamar a `request_info`**, que es lo que hace posible un diálogo de varios turnos dentro del workflow. Probado con un ejemplo mínimo: 3 ciclos de suspensión/reanudación con el estado conservado.
+
+**`RecogerRequisitos` (nuevo nodo) y la diferencia técnica que importa:**
+
+| | `conversar()` (fuera) | `RecogerRequisitos` (dentro) |
+|---|---|---|
+| Forma | un **bucle** | una **máquina de estados** |
+| Turno | `input()` | termina con `request_info` → el workflow se suspende |
+| Requisito | un proceso vivo todo el rato | el estado sobrevive en el checkpoint |
+
+**La lógica de negocio no se duplica:** las dos usan `Sesion.responder()`. Lo único que cambia es el conductor. Mismo patrón que en `poc-agentes`, donde el workflow de MAF y el pipeline a mano eran dos interfaces sobre la misma lógica.
+
+Detalle: el estado del diálogo (requisitos a medias, historial, fase) vive en `ctx.set_state`, **no** en atributos del executor — los atributos no sobreviven a una reanudación desde checkpoint.
+
+**`ejecutar()` es un bucle genérico**: no sabe nada de requisitos ni de confirmaciones, solo ve peticiones pendientes con su `response_type` y delega en `responder_humano(texto, tipo)`. Añadir una puerta humana en cualquier nodo no obliga a tocarlo.
+
+**`agente_chat.py`** es el punto de entrada, y es deliberadamente diminuto: el flujo no depende de que exista una terminal. La misma máquina podría contestarse desde una web o desde otro proceso dos días después; solo cambiaría ese fichero.
+
+**Ejecución completa verificada contra ADO real** (6 suspensiones/reanudaciones):
+```
+llm           recogiendo_requisitos
+humano        confirmando_requisitos
+determinista  descubriendo_catalogo
+hibrido       seleccionando_plantilla
+determinista  planificando_cambios
+humano        confirmando_push
+determinista  completado
+reparto: determinista=3  hibrido=1  llm=1  humano=2
+llamadas reales al modelo: 3
+```
+**3 llamadas**, una por turno de conversación. Las dos confirmaciones costaron **cero**.
+
+**Punto abierto de la convención, resuelto antes de lo previsto:** al meter la conversación dentro, ejecutar el orquestador pasa a llamar al modelo. Renombrados `flujo.py` → `orquestacion/agente_flujo.py` y `chat.py` → `agente_chat.py`. La regla queda con **una sola excepción** (el paquete `llm/`) y ninguna más: una convención con excepciones deja de ser comprobable. De paso, `agente_chat.py` coincide con cómo se llamaba el chat en `poc-agentes`.
 
 ### T3.1 completada (la orquestación como máquina de estados)
 **El hallazgo que invalida el plan B del plan: MAF 1.18.0 tiene human-in-the-loop de primera clase.** Verificado con un ejemplo mínimo *antes* de construir nada encima:
@@ -30,7 +67,7 @@ Consecuencia que va más allá de la comodidad: quien reanuda puede ser **otro p
 
 **`llm/cliente.py` cuenta las llamadas envolviendo al cliente**, no pidiéndole a cada agente que se instrumente: así es imposible añadir un agente nuevo y olvidarse de contarlo. Y el defecto del código pasó de `qwen/qwen3.5-9b` a `google/gemma-3-4b` — seguía siendo el viejo, tapado por el `.env`.
 
-**`orquestacion/flujo.py`:** el mensaje ES el estado. Un `Contexto` (Pydantic) viaja por el grafo y cada nodo devuelve una **copia** con su marca en `traza` — nada de variables globales entre nodos, así la secuencia recorrida es un dato del resultado y no un efecto secundario de unos prints. Única excepción acotada y comentada: el `ClienteAdo`, que no es serializable y por tanto no puede viajar en el mensaje.
+**`orquestacion/agente_flujo.py`:** el mensaje ES el estado. Un `Contexto` (Pydantic) viaja por el grafo y cada nodo devuelve una **copia** con su marca en `traza` — nada de variables globales entre nodos, así la secuencia recorrida es un dato del resultado y no un efecto secundario de unos prints. Única excepción acotada y comentada: el `ClienteAdo`, que no es serializable y por tanto no puede viajar en el mensaje.
 
 **Verificado en real, los dos caminos** (sí → `completado`, no → `cancelado`), contra ADO de verdad:
 ```
