@@ -9,11 +9,31 @@ Continúa la bitácora de `poc-agentes` (sesiones 1–4, hasta 2026-09-12), que 
 ## Sesión 1 — 2026-09-16
 
 ### Por dónde retomar
-**Bloque 1 completo.** Siguiente: **T4.0** (verificar los dos supuestos del YAML y actualizar las tres `template.yaml` para el checkout cruzado) o **T2.1** (el objeto `Requisitos`). T4.0 primero es lo prudente: sus dos supuestos sin verificar condicionan el renderizador, y si el primero falla hay que rediseñar dónde se cargan las variables.
+**Siguiente tarea: T2.2 — recolector conversacional** (`requisitos/recolector.py`). En cada turno: pasarle al modelo el historial + el `Requisitos` actual + `slots_que_faltan()` + `slots_recomendados_vacios()`; que devuelva `{"requisitos_actualizados": {...}, "pregunta_al_usuario": "..."}`; validar con `fusionar()` (que ya lanza `ValidationError` ante campo o valor inventado) y reintentar **una** vez con el error como feedback. Una pregunta por turno. Backend `lmstudio` por defecto — el tier gratuito de Gemini son 20 peticiones/día y aquí se gasta una por turno.
 
-**Los dos supuestos a verificar en T4.0:** (1) que `variables: - template: vars/x.yml@codigo` conviva con `extends:` en el mismo pipeline; (2) que un pipeline alojado en `pipelines` se dispare por cambios en el repo de código.
+### T2.1 completada (el objeto `Requisitos`)
+`requisitos/esquema.py`, módulo **puro** (se prueba entero sin red; la única excepción es `validar_repo_codigo()`, que recibe el cliente explícito).
 
-**Deuda de T4.0:** `render/renderizador.py` emite `template: template.yaml@templates` y `name: MiOrg/MiRepoDePlantillas`. Debe pasar a `PlantillaDisponible.ruta_template`, `POC-MAF/plantillas-ci`, y **dos** entradas en `resources.repositories`.
+**Tres decisiones de diseño:**
+1. **Los campos obligatorios no son obligatorios en el tipo.** El objeto tiene que poder existir a medias durante toda la conversación; si Pydantic exigiera `repo_codigo` no se podría ni construir en el turno 1. Lo obligatorio vive en `slots_que_faltan()`. El tipo valida **forma**; la función decide **si se puede avanzar** — y es ella, nunca el modelo, quien declara terminada la conversación.
+2. **Dos niveles de falta.** `SLOTS_BLOQUEANTES` (`tecnologia`, `repo_codigo`) frente a `SLOTS_RECOMENDADOS` (`version_lenguaje`, `contenedor`, `version_app`). Los segundos no bloquean, pero cada uno vacío es un hueco que tendrá que adivinar el LLM en T3.3. Hace visible el compromiso: cada pregunta respondida por un humano es una adivinanza menos.
+3. **`fusionar()` funde, nunca sustituye.** `None` significa "no sé nada de esto", no "bórralo". Verificado: un modelo que "olvida" todo y solo manda `version_app` no destruye `tecnologia` ni `repo_codigo`. `variables_extra` se funde en profundidad. Y se reconstruye el modelo entero en vez de `model_copy(update=...)`, porque `model_copy` **no valida** y un `tecnologia: "cobol"` entraría tan tranquilo; así revienta, y ese error es la entrada del reintento de T2.2.
+
+**Dos trampas cazadas al probar:**
+- **`contenedor: False` no puede confundirse con "sin dato".** El filtro compara contra `None`, no por verdad. "No, sin Docker" es una respuesta, y perderla sería peor que no haber preguntado. Verificado.
+- **Cadena vacía = sin dato** (hueco encontrado en la primera versión). Un modelo que no sabe algo devuelve `""` tan a menudo como `null`, y como `slots_que_faltan()` mira `is None`, el slot habría quedado marcado como relleno y el flujo habría seguido con una `version_app` vacía. Ahora `""` y `"   "` se ignoran, y las cadenas con contenido se recortan.
+
+**Criterio de éxito verificado:** `Requisitos` a medias → lista exacta de bloqueantes vacíos; completo → `[]`; `repo_codigo` inexistente (`demo-servicio-jaba`) → `ErrorAdo` listando los repos que sí hay, detectado **en la conversación** y no en el push. Y un campo inventado (`framework`) o un valor fuera de la enumeración (`cobol`) salen como `ValidationError`, no como dato.
+
+### Acotación de alcance (2026-09-17): T4.0 fuera
+Decisión del usuario. Que las plantillas **compilen** —checkout cruzado, rutas relativas, triggers entre repos— es diseño de plantillas y es trabajo de **otro proyecto**. El objetivo de esta PoC es más estrecho: **tener plantillas en un repositorio y clonarlas**, dejando en el repo de código sus variables de entorno (el despliegue las necesita para que las soluciones accedan a ellas).
+
+Consecuencias, anotadas para no engañarse después:
+- El pipeline generado será YAML válido y coherente; **no se comprueba que Azure Pipelines lo ejecute**. Mismo criterio que `poc-agentes`.
+- Las tres `template.yaml` del catálogo **no se tocan**.
+- **Supuesto asumido, no verificado:** que `variables: - template: vars/x.yml@codigo` conviva con `extends:`. Si fuera falso, es una línea del renderizador, no un rediseño.
+- **Riesgo aceptado:** el trigger entre repos no se diseña ni se prueba.
+- Sigue en alcance, y pasa al Bloque 3: que el renderizador emita las rutas reales (`PlantillaDisponible.ruta_template`, `POC-MAF/plantillas-ci`) en vez de los `MiOrg/MiRepoDePlantillas` heredados.
 
 ### T1.3 completada + `ado/git.py` extraído
 **`ado/git.py` (nuevo):** primitivas de Git sobre ADO — `id_repo`, `leer_fichero`, `leer_fichero_si_existe`, `listar_arbol`, `sha_rama`. Se extraen ahora y no antes porque es cuando aparece el **segundo** consumidor: que `destinos` importara de `catalogo` acoplaría cosas sin relación. División de capas: `cliente.py` es transporte, `git.py` son operaciones de Git expresadas sobre él.

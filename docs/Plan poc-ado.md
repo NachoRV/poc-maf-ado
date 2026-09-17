@@ -409,18 +409,18 @@ Y la regla de seguridad de `poc-agentes`, que aquí pesa más porque las variabl
 
 El bloque más "de fontanería" y el que convierte la PoC en demo. Cero IA hasta T4.5.
 
-## T4.0 — Actualizar las plantillas del catálogo para el checkout cruzado
-**Tarea nueva, y va primero porque el resto depende de ella.** Las tres `template.yaml` vienen de `poc-agentes`, donde el pipeline vivía **dentro** del repo que construía: `ci-java-container` hace `mavenPomFile: pom.xml`, una ruta relativa al repo checkouteado. Con el pipeline en `pipelines` y el código en otro repo, eso no construye nada.
+## T4.0 — ~~Actualizar las plantillas para el checkout cruzado~~ · FUERA DE ALCANCE
+**Descartada el 2026-09-17 por decisión del usuario.** Que las plantillas compilen —el `checkout` cruzado, las rutas relativas al repo checkouteado, los triggers entre repos— es **diseño de plantillas, y es trabajo de otro proyecto**.
 
-Cada plantilla necesita un `- checkout: codigo` explícito y rutas relativas a ese checkout. El renderizador, por su parte, tiene que emitir el `resources.repositories` con **dos** entradas (`templates` y `codigo`), no una.
+El objetivo de esta PoC es más estrecho y conviene no perderlo de vista: **tener plantillas en un repositorio y clonarlas**, dejando en el repo de código sus variables de entorno (el despliegue necesita variables por entorno para que las soluciones accedan a ellas).
 
-**Antes de escribir código, verificar dos cosas contra ADO, porque el plan las asume y no están comprobadas:**
-1. Que `variables:` con `- template: vars/x.yml@codigo` conviva con `extends:` en el mismo pipeline.
-2. Que un pipeline alojado en `pipelines` pueda dispararse por cambios en el repo `codigo` (trigger sobre recurso de repositorio).
+**Qué implica, dicho explícitamente para no engañarse:**
+- El pipeline generado será **YAML válido y coherente**, con su `resources.repositories` y sus referencias a `vars/*.yml@codigo`. **No se comprueba que Azure Pipelines lo ejecute.** Mismo criterio que `poc-agentes` ("no tiene que ejecutarse en ningún sitio: tiene que ser YAML válido y coherente").
+- Las tres `template.yaml` del catálogo **se dejan como están**. Siguen asumiendo que el pipeline vive junto al código, y eso es correcto en su proyecto de origen.
+- **Supuesto asumido, no verificado:** que `variables: - template: vars/x.yml@codigo` conviva con `extends:` en el mismo pipeline. Si resultara falso, la corrección es una línea del renderizador (cargar las variables desde dentro de la plantilla), no un rediseño. Por eso se asume en vez de bloquear.
+- **Riesgo aceptado:** el disparo automático del pipeline por cambios en el repo de código no se diseña ni se prueba.
 
-Si la (1) no funciona, las variables se cargan desde dentro de la plantilla en vez de desde el hijo. Si la (2) no funciona, el disparo automático se sale del alcance y se documenta — no bloquea la demo.
-
-**Criterio de éxito:** el `template.yaml` actualizado sigue siendo YAML válido y declara el checkout; la deuda anotada en `render/renderizador.py` (`MiOrg/MiRepoDePlantillas` y la ruta del `extends`) queda saldada.
+**Lo que SÍ sigue en alcance** y estaba mezclado en esta tarea: el renderizador tiene que emitir las rutas reales del escenario — `catalog/<id>/template.yaml@templates` (ya resuelto, es `PlantillaDisponible.ruta_template`) y `POC-MAF/plantillas-ci` en vez de los `MiOrg/MiRepoDePlantillas` heredados. Eso no es compatibilidad de plantillas, es que lo que generamos apunte a donde de verdad está. Pasa al Bloque 3, con el renderizado.
 
 ## T4.1 — Rama y commit en una sola llamada
 `ado/cambios.py`. **Ya probado en T0.3:** la Pushes API crea rama y commit de una vez, sin clonar nada, y admite varios ficheros en el mismo commit (allí se subieron 10).
