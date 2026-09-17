@@ -9,7 +9,25 @@ Continúa la bitácora de `poc-agentes` (sesiones 1–4, hasta 2026-09-12), que 
 ## Sesión 1 — 2026-09-16
 
 ### Por dónde retomar
-**Siguiente tarea: T2.3 — cierre y confirmación.** Cuando `slots_que_faltan()` devuelve `[]`, mostrar el `descripcion(requisitos)` completo y pedir confirmación explícita; un "cambia X" vuelve a T2.2 sin perder lo demás. Es donde se cazan las extracciones incompletas del modelo (ver abajo). Con eso cierra el Bloque 2.
+**Bloque 2 completo.** Siguiente: **T3.1 — estados y transiciones explícitos** (`orquestacion/estados.py` + `flujo.py`). Declarar en código, no en un comentario, si cada estado es determinista, LLM o híbrido, y expresar el flujo como máquina de estados. Ahí es donde entra MAF, y donde hay que confirmar contra la versión instalada si su human-in-the-loop sirve para las tres pausas del flujo (recogida, confirmación de plantilla, confirmación de push) — el plan B (avanzar un paso por llamada, empujado desde el chat) ya está escrito en T3.1.
+
+### T2.3 completada — Bloque 2 cerrado
+`requisitos/confirmacion.py` (**determinista, sin prefijo**) + `conversar()` en `agente_recolector.py`.
+
+**La decisión: decir "sí" no puede costar una llamada al modelo.** Clasificar un "sí"/"no" es comparar cadenas, no razonar. El modelo solo entra cuando la respuesta no es un sí/no claro, es decir cuando de verdad hay lenguaje que interpretar ("cambia la versión a 21"). 10/10 casos correctos con **cero llamadas**, incluido `"si, pero no"` → `corrige` (se compara la frase entera, no se busca "si" dentro).
+
+**La confirmación enseña también lo que está vacío**, y avisa: *"Ojo: version_lenguaje sin definir. Si sigues, lo decidirá el modelo."* Sin eso, la pantalla de confirmación oculta justo lo que hay que revisar.
+
+`conversar(sesion, leer, escribir)` con entrada/salida **inyectables**: sin eso, el camino de corrección solo se prueba a mano, y es el que importa.
+
+**Verificado en vivo, y la ejecución justifica la tarea entera:** el modelo se dejó `version_lenguaje` al extraer de "es Java 17, va en Docker, y la version es 1.0.0". La confirmación lo cazó y lo avisó; el usuario corrigió **dentro de la confirmación**; se aplicó y se volvió a confirmar (una corrección nunca da los datos por buenos); el "si" final costó cero tokens.
+
+### Convención `agente_*` (2026-09-17)
+Petición del usuario: saber de un vistazo qué ficheros llaman al LLM al ejecutarse. **Un fichero `agente_*` es un fichero que, AL EJECUTARSE, acaba llamando a un modelo.** Es transitivo: `agente_recolector.py` no importa `llm/`, importa `agente_extractor.py`, que sí. Lo que importa es si ejecutarlo cuesta llamadas, no de qué línea sale la llamada.
+
+Renombrados: `extractor.py` → `agente_extractor.py`, `recolector.py` → `agente_recolector.py`. **Sin renombrar a propósito:** `llm/cliente.py` (no es un agente, es la infraestructura que usan; la carpeta ya avisa).
+
+`comprobar_agentes.py` (nuevo) hace que la convención **se verifique sola**: recorre el grafo de imports y devuelve error si alguien la incumple en cualquier dirección. Una convención que solo vive en la cabeza de alguien se rompe en la tercera tarea. Estado actual: **2 agentes, 9 deterministas**.
 
 ### T2.2 completada (recolector conversacional)
 Tres ficheros, con la **separación LLM/determinista hecha física, no documental**:

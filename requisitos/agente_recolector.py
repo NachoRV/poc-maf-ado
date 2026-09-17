@@ -28,6 +28,7 @@ Para hablar tu:                         .venv/bin/python -m requisitos.agente_re
 """
 from dataclasses import dataclass, field
 
+from requisitos.confirmacion import Veredicto, interpretar
 from requisitos.esquema import (
     DESCRIPCIONES,
     Requisitos,
@@ -82,7 +83,7 @@ class Sesion:
             disponibles = str(error).split("Hay: ")[-1].split(". Ejecuta")[0]
             return f"El repositorio '{equivocado}' no existe. Los disponibles son: {disponibles}. ¿Cual es?"
 
-    def _pregunta_de_respaldo(self) -> str | None:
+    def pregunta_pendiente(self) -> str | None:
         """Pregunta por el primer slot vacio, formulada por CODIGO.
 
         Existe porque medido con gemma-3-4b: cuando ya no faltan bloqueantes, el
@@ -127,7 +128,7 @@ class Sesion:
 
         # El error del usuario se trata aqui, no reintentando contra el modelo.
         pregunta_repo = self._comprobar_repo()
-        pregunta = pregunta_repo or propuesta.pregunta_al_usuario or self._pregunta_de_respaldo()
+        pregunta = pregunta_repo or propuesta.pregunta_al_usuario or self.pregunta_pendiente()
 
         # El historial guarda lo que el modelo DIJO, no el JSON entero: en el
         # siguiente turno el estado ya viaja aparte y repetirlo solo gastaria
@@ -147,59 +148,90 @@ class Sesion:
 #                            los recomendados (cada uno vacio es una adivinanza
 #                            que tendria que hacer el LLM en T3.3)
 #   4. los tres de golpe  -> no queda nada que preguntar
+SALIR = ("salir", "exit", "quit")
+YA_ESTA = ("listo", "ya", "adelante")
+
+
+def conversar(sesion: Sesion, leer, escribir) -> Requisitos | None:
+    """Bucle completo: recoger -> confirmar. Devuelve los requisitos confirmados,
+    o None si el usuario se fue.
+
+    `leer` y `escribir` se inyectan para poder guionizar la conversacion en una
+    prueba reproducible: con input/print directos, el camino de correccion solo
+    se puede probar a mano, y es justo el que hay que probar.
+
+    Dos fases, y la segunda es T2.3:
+      1. RECOGER   -- mientras quede algo que preguntar.
+      2. CONFIRMAR -- se muestra TODO lo recogido, incluido lo que sigue vacio
+         (que es lo que el modelo rellenara por su cuenta despues, y por tanto
+         lo que hay que cazar aqui), y no se avanza sin un si explicito.
+
+    La respuesta a la confirmacion la clasifica requisitos/confirmacion.py SIN
+    llamar al modelo. Solo si no es un si/no claro se trata como correccion y
+    entra el LLM -- decir "si" no debe costar una llamada.
+    """
+    pregunta = "¿Que pipeline necesitas?"
+
+    while True:
+        if pregunta is not None:
+            escribir(f"\033[1magente\033[0m: {pregunta}")
+            if sesion.completo:
+                escribir("         (o escribe 'listo' si ya esta bien asi)")
+            mensaje = leer()
+            if mensaje is None or mensaje.strip().lower() in SALIR:
+                return None
+            mensaje = mensaje.strip()
+            if not mensaje:
+                continue
+            if sesion.completo and mensaje.lower() in YA_ESTA:
+                pregunta = None
+                continue
+            try:
+                pregunta = sesion.responder(mensaje)
+            except Exception as error:
+                # Un turno fallido no tira la sesion: se han visto tres
+                # transitorios distintos en real (presupuesto agotado del modelo,
+                # "400 Model reloaded" y un crash del servidor local).
+                escribir(f"[error en este turno, la sesion sigue] {type(error).__name__}: {error}")
+            continue
+
+        # -- T2.3: confirmacion, no se avanza sin un si --
+        escribir("\n\033[1m=== esto es lo que he entendido ===\033[0m")
+        escribir(descripcion(sesion.requisitos))
+        vacios = slots_recomendados_vacios(sesion.requisitos)
+        if vacios:
+            escribir(f"\n  Ojo: {', '.join(vacios)} sin definir. Si sigues, lo decidira el modelo.")
+        escribir("\n\033[1magente\033[0m: ¿Lo confirmas? (si / no / dime que cambiar)")
+
+        respuesta = leer()
+        if respuesta is None or respuesta.strip().lower() in SALIR:
+            return None
+
+        veredicto = interpretar(respuesta)
+        if veredicto is Veredicto.CONFIRMA:
+            return sesion.requisitos
+        if veredicto is Veredicto.RECHAZA:
+            pregunta = "¿Que quieres cambiar?"
+            continue
+
+        # CORRIGE: lleva informacion, asi que es un turno normal. Despues se
+        # vuelve a confirmar -- una correccion nunca da por buenos los datos.
+        try:
+            sesion.responder(respuesta)
+        except Exception as error:
+            escribir(f"[error en este turno, la sesion sigue] {type(error).__name__}: {error}")
+        pregunta = None if sesion.completo else sesion.pregunta_pendiente()
+
+
 CONVERSACION_DE_EJEMPLO = [
     "necesito una pipeline para un servicio en Java",
-    "el repo se llama demo-servicio-jaba",          # mal escrito a proposito
+    "el repo se llama demo-servicio-jaba",            # mal escrito a proposito
     "perdon, demo-servicio-java",
     "es Java 17, va en Docker, y la version es 1.0.0",
+    "listo",
+    "no, la version del lenguaje es la 21",           # correccion EN la confirmacion
+    "si",                                             # cero llamadas al modelo
 ]
-
-
-def _demo_guionizada(sesion: Sesion) -> None:
-    for mensaje in CONVERSACION_DE_EJEMPLO:
-        print(f"\n\033[1musuario\033[0m: {mensaje}")
-        try:
-            pregunta = sesion.responder(mensaje)
-        except Exception as error:
-            print(f"\033[1magente \033[0m: [turno fallido, la sesion sigue] "
-                  f"{type(error).__name__}: {error}")
-            continue
-        marca = "" if not sesion.completo else "  [ya se puede avanzar]"
-        print(f"\033[1magente \033[0m: {pregunta or '(nada mas que preguntar)'}{marca}")
-        print(f"         └─ bloqueantes={slots_que_faltan(sesion.requisitos)} "
-              f"recomendados_vacios={slots_recomendados_vacios(sesion.requisitos)}")
-
-
-def _demo_interactiva(sesion: Sesion) -> None:
-    print("Escribe 'salir' para terminar.\n")
-    pregunta = "¿Que pipeline necesitas?"
-    while True:
-        print(f"\033[1magente\033[0m: {pregunta}")
-        if sesion.completo:
-            # Los recomendados no bloquean: se ofrece salida junto a la pregunta,
-            # no despues de que el usuario ya haya escrito.
-            print("         (ya tengo lo imprescindible; escribe 'listo' para avanzar)")
-        mensaje = input("\033[1mtu\033[0m: ").strip()
-        if mensaje.lower() in ("salir", "exit", "quit"):
-            return
-        if mensaje.lower() in ("listo", "ya", "adelante") and sesion.completo:
-            return
-        if not mensaje:
-            continue
-        try:
-            pregunta = sesion.responder(mensaje)
-        except Exception as error:
-            # Un fallo de un turno no debe tirar la sesion entera: es la leccion
-            # de poc-agentes (un 429 pasajero mataba toda la conversacion), y aqui
-            # ya se ha visto en real dos veces -- el modelo agotando su presupuesto
-            # razonando, y un 400 "Model reloaded" de LM Studio al recargar. Por
-            # eso se captura Exception y no RuntimeError: los transitorios no
-            # vienen todos de nuestro codigo.
-            print(f"[error en este turno, la sesion sigue] {type(error).__name__}: {error}")
-            continue
-        if pregunta is None:
-            print("\n\033[1magente\033[0m: no me queda nada por preguntar.")
-            return
 
 
 if __name__ == "__main__":
@@ -208,6 +240,19 @@ if __name__ == "__main__":
     from dotenv import load_dotenv
 
     load_dotenv()
+
+    def guion(mensajes):
+        """Hace de `leer`: devuelve el siguiente mensaje del guion y lo muestra."""
+        pendientes = list(mensajes)
+
+        def leer():
+            if not pendientes:
+                return None
+            mensaje = pendientes.pop(0)
+            print(f"\033[1mtu\033[0m: {mensaje}")
+            return mensaje
+
+        return leer
 
     cliente_ado = None
     try:
@@ -220,14 +265,18 @@ if __name__ == "__main__":
 
     sesion = Sesion(cliente_ado=cliente_ado)
     try:
-        if "-i" in sys.argv or "--interactivo" in sys.argv:
-            _demo_interactiva(sesion)
-        else:
-            _demo_guionizada(sesion)
+        interactivo = "-i" in sys.argv or "--interactivo" in sys.argv
+        if interactivo:
+            print("Escribe 'salir' para terminar.\n")
+        leer = (lambda: input("\033[1mtu\033[0m: ")) if interactivo else guion(CONVERSACION_DE_EJEMPLO)
 
-        print("\n\033[1m=== requisitos recogidos ===\033[0m")
-        print(descripcion(sesion.requisitos))
-        print(f"\ncompleto: {sesion.completo}")
+        confirmados = conversar(sesion, leer, print)
+
+        if confirmados is None:
+            print("\n\033[1m=== sin confirmar ===\033[0m (el usuario se fue)")
+        else:
+            print("\n\033[1m=== REQUISITOS CONFIRMADOS ===\033[0m")
+            print(descripcion(confirmados))
     finally:
         if cliente_ado is not None:
             cliente_ado.cerrar()

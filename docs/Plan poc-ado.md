@@ -293,11 +293,11 @@ Un 404 al pedir un fichero significa "no existe", y es un caso **normal**, no un
 
 ---
 
-# Bloque 2 · La entrada conversacional (4–5 h)
+# Bloque 2 · La entrada conversacional (4–5 h)  ✅ COMPLETO
 
 Este es el bloque nuevo de verdad. Todo lo demás es traslado de lo que ya sabes hacer.
 
-## T2.1 — El objeto `Requisitos`
+## T2.1 — El objeto `Requisitos`  ✅
 `requisitos/esquema.py`: un modelo Pydantic con los campos que el flujo necesita para elegir plantilla, rellenar parámetros y resolver variables.
 
 ```
@@ -321,7 +321,7 @@ notas:             str | None       texto libre que no encaja en ningún slot
 
 **Criterio de éxito:** un `Requisitos` a medias devuelve exactamente la lista de campos obligatorios vacíos; uno completo devuelve `[]`; y un `repo_codigo` inexistente en ADO se rechaza con un mensaje que lista los repos que sí hay.
 
-## T2.2 — Recolector conversacional (slot filling)
+## T2.2 — Recolector conversacional (slot filling)  ✅
 `requisitos/agente_recolector.py`. En cada turno:
 1. Se le pasan al modelo el historial, el estado actual del `Requisitos` y la lista de slots que faltan.
 2. Devuelve un JSON: `{"requisitos_actualizados": {...}, "pregunta_al_usuario": "..."}`.
@@ -337,7 +337,7 @@ notas:             str | None       texto libre que no encaja en ningún slot
 - El modelo hace tres preguntas a la vez. Instrucción explícita: una por turno.
 - El usuario dice algo fuera de dominio ("es un proyecto de Go"). Debe salir por `notas`, no forzarse a la enumeración.
 
-## T2.3 — Cierre y confirmación
+## T2.3 — Cierre y confirmación  ✅
 Cuando no faltan slots, se le muestra al usuario el `Requisitos` completo en texto plano y se le pide confirmación explícita. Si dice que no, vuelve a T2.2 con su corrección.
 
 **Criterio de éxito:** el flujo no avanza sin un "sí" del usuario, y un "cambia la versión a 21" vuelve atrás y la cambia sin perder lo demás.
