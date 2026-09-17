@@ -174,15 +174,18 @@ poc-agentes-maf/
 │   ├── sembrar.py               # ✅ T0.3 - escenario de pruebas (idempotente)
 │   ├── destinos.py              # T1.3 - repo pipelines + qué ficheros ya existen
 │   └── cambios.py               # Bloque 4 - pushes y pull requests
+├── llm/
+│   └── cliente.py               # ✅ único sitio que construye un cliente de modelo
 ├── requisitos/
-│   ├── esquema.py               # modelo Pydantic Requisitos
-│   └── recolector.py            # slot filling con LLM
+│   ├── esquema.py               # ✅ T2.1 - modelo Requisitos (determinista, sin red)
+│   ├── agente_extractor.py      # ✅ T2.2 - texto → dict parcial (LLM)
+│   └── agente_recolector.py     # ✅ T2.2 - el bucle de turnos
 ├── seleccion/
 │   ├── reglas.py
-│   └── hibrido.py
+│   └── agente_hibrido.py
 ├── parametros/
-│   ├── generador.py             # parámetros del extends
-│   └── variables.py             # vars/*.yml: defaults + merge con lo existente
+│   ├── agente_generador.py      # parámetros del extends
+│   └── variables.py             # vars/*.yml: defaults + merge (sin LLM)
 ├── render/
 │   ├── renderizador.py          # el pipeline hijo
 │   └── vars.py                  # los cuatro ficheros de variables
@@ -192,6 +195,8 @@ poc-agentes-maf/
 ├── chat.py
 └── runs/
 ```
+
+**Convención de nombres (2026-09-17):** un fichero `agente_*` es un fichero que, **al ejecutarse, acaba llamando a un modelo**. Es transitivo: `agente_recolector.py` no importa `llm/`, pero sí a `agente_extractor.py`. Lo comprueba `comprobar_agentes.py`, que recorre el grafo de imports y devuelve error si alguien se salta la regla. Así "¿qué partes pueden alucinar?" se responde con un `ls`.
 
 **El límite importante es `ado/`.** Todo lo que sabe de Azure DevOps vive ahí y expone funciones de dominio (`descubrir_plantillas()`, `crear_pull_request(...)`). El resto del sistema no sabe que existe ADO. Si mañana hay que soportar GitHub, se escribe `github/` con la misma superficie y no se toca nada más.
 
@@ -317,7 +322,7 @@ notas:             str | None       texto libre que no encaja en ningún slot
 **Criterio de éxito:** un `Requisitos` a medias devuelve exactamente la lista de campos obligatorios vacíos; uno completo devuelve `[]`; y un `repo_codigo` inexistente en ADO se rechaza con un mensaje que lista los repos que sí hay.
 
 ## T2.2 — Recolector conversacional (slot filling)
-`requisitos/recolector.py`. En cada turno:
+`requisitos/agente_recolector.py`. En cada turno:
 1. Se le pasan al modelo el historial, el estado actual del `Requisitos` y la lista de slots que faltan.
 2. Devuelve un JSON: `{"requisitos_actualizados": {...}, "pregunta_al_usuario": "..."}`.
 3. Se valida contra el esquema. Si no valida, se reintenta una vez con el error como feedback (patrón de T1.2 de la PoC anterior).

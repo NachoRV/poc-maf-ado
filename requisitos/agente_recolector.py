@@ -1,7 +1,7 @@
 """T2.2 (parte determinista) - el bucle de turnos de la conversacion.
 
 ESTE FICHERO NO IMPORTA NADA DE `llm/`. Compruebalo: la unica pieza que habla
-con un modelo es requisitos/extractor.py, y aqui se usa como una funcion mas.
+con un modelo es requisitos/agente_extractor.py, y aqui se usa como una funcion mas.
 Todo lo que decide el comportamiento del chat --cuando parar, que se guarda, que
 pasa si el usuario se equivoca-- es codigo normal y esta aqui.
 
@@ -23,8 +23,8 @@ distinto.
     existen. Confundir estos dos casos hace que el sistema le eche la culpa al
     modelo de los errores de la persona, y viceversa.
 
-Ejecuta la conversacion de ejemplo con: .venv/bin/python -m requisitos.recolector
-Para hablar tu:                         .venv/bin/python -m requisitos.recolector -i
+Ejecuta la conversacion de ejemplo con: .venv/bin/python -m requisitos.agente_recolector
+Para hablar tu:                         .venv/bin/python -m requisitos.agente_recolector -i
 """
 from dataclasses import dataclass, field
 
@@ -37,7 +37,7 @@ from requisitos.esquema import (
     slots_que_faltan,
     slots_recomendados_vacios,
 )
-from requisitos.extractor import PropuestaTurno, proponer
+from requisitos.agente_extractor import PropuestaTurno, proponer
 
 
 @dataclass

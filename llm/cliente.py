@@ -38,7 +38,7 @@ BACKEND_POR_DEFECTO = "lmstudio"
 #
 # 180s porque un modelo de razonamiento local tarda minutos de verdad; no es un
 # servicio web. max_retries=1 porque el reintento util (con el error como
-# feedback) lo hace requisitos/extractor.py, que ademas sabe que decirle al
+# feedback) lo hace requisitos/agente_extractor.py, que ademas sabe que decirle al
 # modelo -- reintentar aqui a ciegas solo multiplica la espera.
 TIMEOUT = float(os.environ.get("LLM_TIMEOUT", "180"))
 MAX_REINTENTOS_HTTP = 1

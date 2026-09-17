@@ -17,8 +17,8 @@ Tres ficheros, con la **separación LLM/determinista hecha física, no documenta
 | Fichero | Naturaleza | Qué hace |
 |---|---|---|
 | `llm/cliente.py` | infraestructura | **Único sitio** que construye un cliente de modelo |
-| `requisitos/extractor.py` | **LLM** | Única pieza que habla con un modelo. Texto → dict parcial |
-| `requisitos/recolector.py` | determinista | El bucle, la fusión, cuándo parar, la recuperación de errores |
+| `requisitos/agente_extractor.py` | **LLM** | Única pieza que habla con un modelo. Texto → dict parcial |
+| `requisitos/agente_recolector.py` | determinista | El bucle, la fusión, cuándo parar, la recuperación de errores |
 
 La regla queda comprobable: `grep -rl "from llm" --include="*.py" .` devuelve **dos ficheros en todo el proyecto**. "¿Qué partes pueden alucinar?" deja de ser una afirmación de confianza.
 

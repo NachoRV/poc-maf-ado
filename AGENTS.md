@@ -28,6 +28,15 @@ Theory lives in Obsidian, not in the repo: `/Users/irvb/Library/Mobile Documents
 
 The repo's `docs/notas-agentes/` keeps **only** the session log — operational continuity, not theory.
 
+## Naming convention: `agente_*` means it calls a model (set 2026-09-17)
+**A file whose name starts with `agente_` is a file that, when executed, ends up calling a language model. Any other file does not.** "When executed" is transitive, not literal: `requisitos/agente_recolector.py` doesn't import `llm/` — it imports `agente_extractor.py`, which does. What matters is whether running it costs model calls, not which line the call comes from.
+
+The point is that "which parts of this system can hallucinate?" should be answerable from an `ls`, and stay answerable as the project grows. It is enforced, not remembered: `.venv/bin/python comprobar_agentes.py` walks the import graph and exits non-zero if a file calls the model without the prefix, or carries the prefix without calling it. Run it after adding any module.
+
+Deliberate exception: the `llm/` package carries no prefix. Those aren't agents, they're the infrastructure agents use, and the folder name already says so.
+
+Files this will apply to as they get written: `seleccion/agente_hibrido.py`, `parametros/agente_generador.py`, and whatever writes the pull request descriptions. `parametros/variables.py` and everything under `render/` stay unprefixed — no model touches the artifact that gets deployed.
+
 ## Architecture
 ```
 chat (LLM: slot filling) → requisitos.json → catálogo ADO → selección (reglas + LLM)

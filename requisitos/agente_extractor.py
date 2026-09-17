@@ -2,7 +2,7 @@
 
 ESTE ES EL UNICO FICHERO DEL BLOQUE 2 QUE HABLA CON UN MODELO. Todo lo demas
 --llevar el historial, fundir el estado, decidir si falta algo, decidir cuando
-parar-- es codigo normal y vive en requisitos/recolector.py y
+parar-- es codigo normal y vive en requisitos/agente_recolector.py y
 requisitos/esquema.py. La separacion es fisica a proposito: se comprueba con un
 grep, no leyendo.
 
@@ -17,7 +17,7 @@ la ultima frase del humano a campos. No tiene que recordar (le pasamos el
 estado), ni deducir que falta (se lo damos), ni decidir si ha terminado (no es
 suyo). Cuanto mas estrecho es el trabajo, menos hay que adivinar.
 
-Ejecuta con: .venv/bin/python -m requisitos.extractor
+Ejecuta con: .venv/bin/python -m requisitos.agente_extractor
 """
 import json
 import os
