@@ -9,7 +9,46 @@ Continúa la bitácora de `poc-agentes` (sesiones 1–4, hasta 2026-09-12), que 
 ## Sesión 1 — 2026-09-16
 
 ### Por dónde retomar
-**Siguiente tarea: T2.2 — recolector conversacional** (`requisitos/recolector.py`). En cada turno: pasarle al modelo el historial + el `Requisitos` actual + `slots_que_faltan()` + `slots_recomendados_vacios()`; que devuelva `{"requisitos_actualizados": {...}, "pregunta_al_usuario": "..."}`; validar con `fusionar()` (que ya lanza `ValidationError` ante campo o valor inventado) y reintentar **una** vez con el error como feedback. Una pregunta por turno. Backend `lmstudio` por defecto — el tier gratuito de Gemini son 20 peticiones/día y aquí se gasta una por turno.
+**Siguiente tarea: T2.3 — cierre y confirmación.** Cuando `slots_que_faltan()` devuelve `[]`, mostrar el `descripcion(requisitos)` completo y pedir confirmación explícita; un "cambia X" vuelve a T2.2 sin perder lo demás. Es donde se cazan las extracciones incompletas del modelo (ver abajo). Con eso cierra el Bloque 2.
+
+### T2.2 completada (recolector conversacional)
+Tres ficheros, con la **separación LLM/determinista hecha física, no documental**:
+
+| Fichero | Naturaleza | Qué hace |
+|---|---|---|
+| `llm/cliente.py` | infraestructura | **Único sitio** que construye un cliente de modelo |
+| `requisitos/extractor.py` | **LLM** | Única pieza que habla con un modelo. Texto → dict parcial |
+| `requisitos/recolector.py` | determinista | El bucle, la fusión, cuándo parar, la recuperación de errores |
+
+La regla queda comprobable: `grep -rl "from llm" --include="*.py" .` devuelve **dos ficheros en todo el proyecto**. "¿Qué partes pueden alucinar?" deja de ser una afirmación de confianza.
+
+**Aclaración conceptual que conviene retener: esto NO es un agente.** Un agente decide *qué hacer* (qué herramienta llamar, si seguir o parar). Aquí el modelo recibe un estado, propone un diccionario y termina. Quién pregunta, cuándo se para y qué se guarda lo decide el código. Un agente puede sorprenderte; esto no.
+
+**Dos clases de error, tratadas distinto** (y esto es lo que más se nota al usarlo):
+- El **modelo** devuelve algo inválido → se reintenta contra el modelo con el error como feedback. Es culpa suya y puede corregirlo.
+- El **usuario** dicta un repo que no existe → **no** se reintenta contra el modelo: transcribió bien lo que oyó. Se descarta el campo y se le pregunta al humano con la lista real de repos de ADO. Verificado en vivo con `demo-servicio-jaba`.
+
+**Pregunta de respaldo determinista:** medido con gemma-3-4b, cuando ya no faltan bloqueantes el modelo devuelve `pregunta_al_usuario: null` aunque queden recomendados vacíos, pese a que el prompt le pide lo contrario. En vez de pelearse con el prompt, la pregunta se formula en código desde `DESCRIPCIONES`. "¿Cuál es la versión del lenguaje?" no necesita un LLM.
+
+### El modelo local: tres días de lecciones en una tarde
+**qwen3.5-9b era un modelo de RAZONAMIENTO y fue un error elegirlo.** Gastaba ~1500 tokens pensando para producir 130 caracteres de JSON. Las dos formas documentadas de apagarlo en LM Studio (`extra_body={"chat_template_kwargs": {"enable_thinking": false}}` y el sufijo `/no_think`) **se ignoran las dos** — comprobado. Subir el presupuesto a 16000 acabó **crasheando LM Studio entero**. Sustituido por **`google/gemma-3-4b`** (no razona): 16 tokens donde el otro gastaba 1500, y `LLM_MAX_TOKENS` baja de 8000 a 500.
+
+**Bug propio grave, encontrado al cambiar de modelo: el orden de los mensajes.** El bloque de estado iba como último mensaje, detrás del historial, así que **el modelo respondía al bloque de estado y no a lo que acababa de decir la persona**. Medido con el mismo turno y los dos órdenes:
+
+| Orden | Extrae |
+|---|---|
+| historial + estado al final | `{"tecnologia": "java"}` — ignora al usuario |
+| estado en `system`, usuario al final | `{"tecnologia": "java", "repo_codigo": "demo-servicio-jaba"}` ✓ |
+
+Qwen 9B lo toleraba; Gemma 4B no. **Es la peor clase de bug: el que no se ve hasta que cambias de modelo.** Contrapartida anotada en el código: el `system` cambia cada turno, así que no se cachea el prefijo — irrelevante en local, a corregir si el backend pasa a ser de pago.
+
+**Faltaba timeout en el cliente del modelo.** A `ado/cliente.py` le puse `timeout=60` desde el principio; a este, ninguno. El SDK de OpenAI usa **600 s con 2 reintentos** por defecto, y un proceso estuvo **20 minutos al 0% de CPU** contra un socket muerto mientras el servidor respondía a todo lo demás en 2 s. Ahora `LLM_TIMEOUT=180` explícito y `max_retries=1` (el reintento útil, con el error como feedback, lo hace el extractor).
+
+**Y los bucles sobreviven a un turno fallido** (`except Exception`, no `RuntimeError`): se han visto en real tres transitorios distintos — presupuesto agotado, `400 Model reloaded` y `The model has crashed`. La lección de `poc-agentes` (un 429 mataba la sesión entera) vuelve a aplicar, y los transitorios no vienen todos de nuestro código.
+
+**Limitación honesta del 4B:** la extracción es variable. En una ejecución cogió `version_lenguaje`, `contenedor` y `version_app` del mismo mensaje; en otra se dejó `version_lenguaje`. No es un fallo del sistema — es exactamente lo que T2.3 (confirmación humana) existe para cazar, y un argumento para un modelo mayor en producción.
+
+**Nota sobre proveedores:** `agent-framework-anthropic` **no existe** — MAF en Python solo trae paquetes para Gemini y OpenAI. Y Anthropic no tiene endpoint compatible con OpenAI, así que un backend suyo necesitaría el SDK `anthropic` y un tercer valor de `MODEL_BACKEND`. Pendiente de decisión del usuario; el coste de desarrollo sería ~0,7 céntimos por turno con Opus 5.
 
 ### T2.1 completada (el objeto `Requisitos`)
 `requisitos/esquema.py`, módulo **puro** (se prueba entero sin red; la única excepción es `validar_repo_codigo()`, que recibe el cliente explícito).
