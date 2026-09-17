@@ -175,6 +175,10 @@ def _demo_interactiva(sesion: Sesion) -> None:
     pregunta = "¿Que pipeline necesitas?"
     while True:
         print(f"\033[1magente\033[0m: {pregunta}")
+        if sesion.completo:
+            # Los recomendados no bloquean: se ofrece salida junto a la pregunta,
+            # no despues de que el usuario ya haya escrito.
+            print("         (ya tengo lo imprescindible; escribe 'listo' para avanzar)")
         mensaje = input("\033[1mtu\033[0m: ").strip()
         if mensaje.lower() in ("salir", "exit", "quit"):
             return
@@ -196,9 +200,6 @@ def _demo_interactiva(sesion: Sesion) -> None:
         if pregunta is None:
             print("\n\033[1magente\033[0m: no me queda nada por preguntar.")
             return
-        if sesion.completo:
-            # Los recomendados no bloquean: se ofrece salida en cada turno.
-            print("       (ya tengo lo imprescindible; responde 'listo' para avanzar)")
 
 
 if __name__ == "__main__":
