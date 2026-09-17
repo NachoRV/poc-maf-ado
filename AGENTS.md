@@ -35,6 +35,8 @@ The point is that "which parts of this system can hallucinate?" should be answer
 
 Deliberate exception: the `llm/` package carries no prefix. Those aren't agents, they're the infrastructure agents use, and the folder name already says so.
 
+Refinement added 2026-09-17: importing from `llm/` is **not** the same as calling the model. `llamadas_al_modelo` / `reiniciar_contador` are observability — `orquestacion/flujo.py` uses them to report how many calls happened, and one of its runs measures zero. Only `construir_cliente` / `kwargs_json` count. **Open point to settle when T3.2 lands:** once `flujo.py` imports `seleccion/agente_hibrido.py`, running it *will* cause model calls, and by the user's stated criterion it would need the prefix (`orquestacion/agente_flujo.py`) — even though it is the machine that runs agents, not an agent. Raise it then rather than decide it silently.
+
 Files this will apply to as they get written: `seleccion/agente_hibrido.py`, `parametros/agente_generador.py`, and whatever writes the pull request descriptions. `parametros/variables.py` and everything under `render/` stay unprefixed — no model touches the artifact that gets deployed.
 
 ## Architecture

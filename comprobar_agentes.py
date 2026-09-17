@@ -28,9 +28,19 @@ PREFIJO = "agente_"
 PAQUETE_INFRAESTRUCTURA = "llm"
 IGNORAR = (".venv", "__pycache__")
 
+# Importar de `llm/` no es lo mismo que llamar al modelo. `llamadas_al_modelo` y
+# `reiniciar_contador` son OBSERVABILIDAD: orquestacion/flujo.py las usa para
+# informar de cuantas llamadas hubo, y una ejecucion suya mide cero. Solo estas
+# dos funciones construyen algo con lo que se pueda llamar de verdad.
+CONSTRUYEN_CLIENTE = {"construir_cliente", "kwargs_json"}
+
 
 def modulos() -> dict[str, set[str]]:
-    """{modulo: lo que importa}, para todo el codigo del proyecto."""
+    """{modulo: lo que importa}, para todo el codigo del proyecto.
+
+    De `llm/` solo se anotan los imports que construyen un cliente; traerse el
+    contador no cuenta (ver CONSTRUYEN_CLIENTE).
+    """
     encontrados = {}
     for fichero in sorted(Path(".").rglob("*.py")):
         if any(parte in str(fichero) for parte in IGNORAR):
@@ -38,6 +48,9 @@ def modulos() -> dict[str, set[str]]:
         importados = set()
         for nodo in ast.walk(ast.parse(fichero.read_text())):
             if isinstance(nodo, ast.ImportFrom) and nodo.module:
+                if nodo.module.split(".")[0] == PAQUETE_INFRAESTRUCTURA:
+                    if not any(a.name in CONSTRUYEN_CLIENTE for a in nodo.names):
+                        continue
                 importados.add(nodo.module)
             elif isinstance(nodo, ast.Import):
                 importados.update(alias.name for alias in nodo.names)
