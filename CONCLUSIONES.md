@@ -74,6 +74,7 @@ Lo que costó una sesión de depuración, por orden de aparición:
 | El bloque de estado como **último** mensaje: el modelo respondía al bloque, no al usuario | el estado va en el `system`; el mensaje del usuario, el último. Qwen 9B lo toleraba; gemma 4B no |
 | `ctx.set_state` **no lo ve el nodo siguiente** | lo que necesita el registro final viaja en el mensaje, no en el estado del executor |
 | `yaml.safe_dump` de un escalar suelto añade `...` y rompe el fichero | lo cazó la relectura del YAML generado |
+| **En la primera demo en vivo**: pedí `node 26`, el schema solo admite 18/20/22, y el flujo **se cayó con un stacktrace** en vez de volver a preguntar | validar-y-reintentar existía para el modelo, pero no para la persona. Un valor que el schema rechaza es **un turno más de conversación**, no un error fatal |
 
 ### Mi respuesta
 

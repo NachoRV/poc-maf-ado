@@ -55,7 +55,9 @@ from ado.destinos import Inventario, inventario, nombre_repo_pipelines, ruta_pip
 from redaccion import texto
 from redaccion.agente_pr import explicar
 from render.renderizador import renderizar_pipeline
-from parametros.generador import Pendiente, convertir, derivar, validar
+from parametros.generador import (
+    ErrorDeParametros, Pendiente, convertir, derivar, repreguntar, validar,
+)
 from parametros.variables import generar, huecos, origen_de_cada_variable
 from traza.registro import guardar
 from llm.cliente import llamadas_al_modelo, reiniciar_contador
@@ -303,7 +305,21 @@ class GenerarParametros(Executor):
         # La validacion va contra el schema REAL de la plantilla, leido de ADO.
         # Se hace aqui, antes de seguir, para que un valor invalido salte en la
         # conversacion y no al escribir el fichero.
-        validar(valores, leer_schema(_ado(), contexto.plantilla))
+        #
+        # Y si falla NO se revienta: se vuelve a preguntar. Un valor que el
+        # schema rechaza es un turno mas de conversacion, no un stacktrace --
+        # salio de una demo en real, donde pedir "node 26" mataba el proceso.
+        # Es el mismo validar-y-reintentar que se usa con el modelo, aplicado a
+        # una persona: el error del schema ES el enunciado de la pregunta.
+        try:
+            validar(valores, leer_schema(_ado(), contexto.plantilla))
+        except ErrorDeParametros as error:
+            pendiente = repreguntar(contexto.plantilla, error, valores)
+            if pendiente is None:
+                raise  # no es un valor concreto: falta o sobra un parametro entero
+            ctx.set_state("pendientes", [vars(pendiente)])
+            await ctx.request_info(pendiente.pregunta(), str)
+            return
 
         await ctx.send_message(contexto.paso(
             Estado.GENERANDO_PARAMETROS, parametros=valores, origen_parametros=ctx.get_state("origen")

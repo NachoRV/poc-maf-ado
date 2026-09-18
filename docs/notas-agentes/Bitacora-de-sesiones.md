@@ -13,6 +13,21 @@ Continúa la bitácora de `poc-agentes` (sesiones 1–4, hasta 2026-09-12), que 
 - **T5.2 — responder las tres preguntas de `CONCLUSIONES.md`.** El andamio está escrito con **todos los datos ya medidos** (reparto declarado vs medido, dónde se fueron las 5 llamadas, la lista de lo que se rompió con ADO, el acoplamiento medido con `grep`). Los tres huecos `<!-- Mi respuesta -->` los escribe el usuario en primera persona — igual que T4.4 en `poc-agentes`.
 - **T4.4** — verificar contra ADO real que regenerar no destruye ediciones humanas (el código lo hace y está probado en memoria; falta la prueba de extremo a extremo: editar un `vars/pro.yml` a mano en ADO y re-ejecutar el alta).
 
+### Fallo encontrado en la primera demo en vivo: un valor inválido mataba el proceso
+Pidiendo una pipeline de node dije **`node 26`**. El schema de `ci-node-container` solo admite `['18','20','22']`, y el flujo **reventó con un `ValidationError` crudo** a mitad de la conversación. Dos fallos encadenados:
+
+1. **`derivar()` aceptaba a ciegas cualquier valor que supiera derivar.** Si la señal se sabía traducir, el valor entraba en `valores` sin mirar el `allowed_values` ni el `pattern` del manifest. Derivar un valor no es lo mismo que aceptarlo.
+2. **Un fallo de validación era terminal.** `_terminar()` llamaba a `validar()` y nada lo recogía: el `ValueError` subía hasta `asyncio.run` y mataba el proceso a mitad de conversación.
+
+**Arreglo:** el valor rechazado se convierte en **otra pregunta**, con las opciones a la vista.
+- `restriccion_incumplida(valor, parametro)` comprueba `allowed_values` y `pattern` **del manifest**, así el rechazo ocurre en la conversación (donde se puede repreguntar) y no al final.
+- `ErrorDeParametros` lleva **el nombre del parámetro culpable** (de `error.path` de jsonschema). Ese dato es lo único que separa "el flujo se cae" de "el flujo vuelve a preguntar".
+- `repreguntar()` lo traduce a un `Pendiente` nuevo. Devuelve `None` cuando el error no es de un valor concreto (falta o sobra un parámetro entero): eso **sí** debe propagarse, porque es un fallo del sistema y preguntarlo no lo arregla.
+
+**Lo que enseña, y va a la pregunta 2 de `CONCLUSIONES.md`:** el validar-y-reintentar estaba construido para el modelo, que se equivoca de forma esperada — pero no para la persona, que también se equivoca. El sistema sigue **sin inventar nada**: no corrige un 26 a un 22 por su cuenta, pregunta.
+
+Probado de punta a punta con el guion de la demo (`26` → repregunta → `20` → sigue), declinando el push: **cero escrituras en ADO**.
+
 ### T5.2 — el andamio de `CONCLUSIONES.md` (los datos, no las respuestas)
 El documento no se escribe entero porque la parte que vale es la de primera persona. Lo que sí se puede preparar es que las respuestas no obliguen a volver a buscar nada:
 
