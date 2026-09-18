@@ -94,7 +94,7 @@ PASOS: dict[Estado, Paso] = {
         "inventado, y regenerar funde sin pisar lo que un humano anadio.",
     ),
     Estado.RENDERIZANDO: Paso(
-        Naturaleza.DETERMINISTA, "render/ (pendiente)",
+        Naturaleza.DETERMINISTA, "render/renderizador.py",
         "yaml.dump. El modelo NUNCA escribe el artefacto que se despliega.",
     ),
     Estado.PLANIFICANDO_CAMBIOS: Paso(
@@ -106,19 +106,19 @@ PASOS: dict[Estado, Paso] = {
         "Ultima puerta antes de escribir en repos reales. Nada se escribe sin un si.",
     ),
     Estado.ESCRIBIENDO_EN_ADO: Paso(
-        Naturaleza.DETERMINISTA, "ado/cambios.py (Bloque 4, pendiente)",
+        Naturaleza.DETERMINISTA, "ado/cambios.py",
         "Pushes API. Rama y commit en una llamada, en los dos repos.",
     ),
     Estado.REDACTANDO_PRS: Paso(
-        Naturaleza.LLM, "(Bloque 4, pendiente)",
+        Naturaleza.LLM, "redaccion/agente_pr.py + redaccion/texto.py",
         "Prosa para un revisor humano. Si sale mal, alguien la lee y la corrige.",
     ),
     Estado.CREANDO_PRS: Paso(
-        Naturaleza.DETERMINISTA, "ado/cambios.py (Bloque 4, pendiente)",
+        Naturaleza.DETERMINISTA, "ado/cambios.py",
         "Pull Requests API. Los dos, o ninguno.",
     ),
     Estado.REGISTRANDO_RUN: Paso(
-        Naturaleza.DETERMINISTA, "(Bloque 5, pendiente)",
+        Naturaleza.DETERMINISTA, "traza/registro.py",
         "Ficheros en runs/, con el origen de cada valor.",
     ),
     Estado.COMPLETADO: Paso(Naturaleza.DETERMINISTA, "-", "Terminal."),

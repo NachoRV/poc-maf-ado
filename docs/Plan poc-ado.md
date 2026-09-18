@@ -497,7 +497,7 @@ Una carpeta por ejecución: `requisitos.json`, `transcripcion.md` (la conversaci
 
 **Criterio de éxito:** abres una carpeta y reconstruyes la ejecución entera sin volver a ejecutar nada — incluido *de dónde salió cada valor*. Esa columna de origen es lo que no tenías en la PoC anterior, y con variables por entorno pasa de ser un lujo a ser necesaria: es la diferencia entre "el sistema puso 3 réplicas" y "el sistema respetó las 8 réplicas que alguien había puesto a mano".
 
-## T5.2 — `CONCLUSIONES.md`
+## T5.2 — `CONCLUSIONES.md`  (andamio ✅, respuestas pendientes)
 Tres preguntas, respondidas en primera persona después de haberlo tocado:
 1. ¿Cuántos de los 18 pasos necesitaron LLM de verdad, y el reparto medido coincide con el previsto en este plan?
 2. ¿Qué se rompió al pasar de disco a ADO, y qué habría hecho distinto si lo hubiera sabido?

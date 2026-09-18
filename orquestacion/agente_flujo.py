@@ -98,6 +98,9 @@ class Contexto(BaseModel):
     # final, que es otro nodo: el estado de un executor no lo ve el siguiente.
     historial: list[dict] = []
     origen_variables: dict = {}
+    # Como se eligio la plantilla, no solo cual. En un estado HIBRIDO esa es la
+    # unica forma de saber si el modelo llego a intervenir en esta ejecucion.
+    seleccion: dict = {}
     descripciones: dict[str, str] = {}
     confirmado: bool | None = None
     urls_prs: list[str] = []
@@ -230,7 +233,20 @@ async def seleccionar_plantilla(ctx_flujo: Contexto, ctx: WorkflowContext[Contex
     if resultado.razonamiento:
         print(f"  [seleccion] {resultado.razonamiento}")
     await ctx.send_message(
-        ctx_flujo.paso(Estado.SELECCIONANDO_PLANTILLA, plantilla=resultado.plantilla)
+        ctx_flujo.paso(
+            Estado.SELECCIONANDO_PLANTILLA,
+            plantilla=resultado.plantilla,
+            # El COMO, no solo el QUE: origen="reglas" con confianza 1.0 quiere
+            # decir que este estado hibrido costo cero llamadas al modelo. Sin
+            # esto la traza no puede distinguirlo de una eleccion del LLM.
+            seleccion={
+                "estado": str(resultado.estado),
+                "origen": resultado.origen,
+                "confianza": resultado.confianza,
+                "arquetipo": resultado.arquetipo,
+                "razonamiento": resultado.razonamiento,
+            },
+        )
     )
 
 

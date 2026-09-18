@@ -57,6 +57,9 @@ def guardar(contexto, *, llamadas_modelo: int, naturaleza_por_estado: dict) -> P
         "plantilla": contexto.plantilla.id if contexto.plantilla else None,
         "tag_del_catalogo": contexto.plantilla.tag if contexto.plantilla else None,
         "candidatas_del_catalogo": [p.id for p in contexto.plantillas],
+        # origen/confianza vienen del nodo hibrido. "reglas" con confianza 1.0
+        # significa que el modelo no se llego a llamar en esta ejecucion.
+        **contexto.seleccion,
     })
 
     # Las dos columnas de origen: sin esto la traza dice QUE, pero no DE DONDE.

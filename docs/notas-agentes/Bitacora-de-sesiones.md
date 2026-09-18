@@ -9,9 +9,20 @@ Continúa la bitácora de `poc-agentes` (sesiones 1–4, hasta 2026-09-12), que 
 ## Sesión 1 — 2026-09-16
 
 ### Por dónde retomar
-**El plan está prácticamente cerrado.** Queda:
-- **T5.2 — `CONCLUSIONES.md`**, que lo escribe el usuario en primera persona (igual que T4.4 en `poc-agentes`). Tres preguntas: cuántos de los estados necesitaron LLM de verdad y si el reparto medido coincide con el previsto; qué se rompió al pasar de disco a ADO; y qué parte del sistema seguiría siendo suya si cambiara de framework o de proveedor Git.
+**El plan está cerrado salvo dos cosas, y las dos son del usuario o necesitan ADO real.** Queda:
+- **T5.2 — responder las tres preguntas de `CONCLUSIONES.md`.** El andamio está escrito con **todos los datos ya medidos** (reparto declarado vs medido, dónde se fueron las 5 llamadas, la lista de lo que se rompió con ADO, el acoplamiento medido con `grep`). Los tres huecos `<!-- Mi respuesta -->` los escribe el usuario en primera persona — igual que T4.4 en `poc-agentes`.
 - **T4.4** — verificar contra ADO real que regenerar no destruye ediciones humanas (el código lo hace y está probado en memoria; falta la prueba de extremo a extremo: editar un `vars/pro.yml` a mano en ADO y re-ejecutar el alta).
+
+### T5.2 — el andamio de `CONCLUSIONES.md` (los datos, no las respuestas)
+El documento no se escribe entero porque la parte que vale es la de primera persona. Lo que sí se puede preparar es que las respuestas no obliguen a volver a buscar nada:
+
+**Pregunta 1 (¿cuánto LLM de verdad?).** El plan hablaba de 18 pasos; salieron **16 estados**. Declarado: 11 deterministas, 1 híbrido, 2 LLM, 2 humanos → el modelo *puede* intervenir en **3 de 16**. Medido en la ejecución real: 14 estados recorridos, **5 llamadas** — 3 de conversación (una por turno) + 2 de descripciones de PR. **El estado híbrido gastó 0.**
+
+**Dos arreglos que hicieron falta para que eso fuera demostrable y no una afirmación:**
+1. `seleccion.json` guardaba *qué* plantilla se eligió pero no *cómo*. El `Seleccion` con `origen`/`confianza` se descartaba al salir del nodo. Ahora viaja en el `Contexto` y se vuelca: `origen: "reglas", confianza: 1.0` es la prueba de que el modelo no se llamó. Era un criterio de éxito del propio T5.1 que no se cumplía.
+2. La tabla de `orquestacion/estados.py` seguía diciendo `"(Bloque 4, pendiente)"` en cinco filas ya implementadas. La tabla es la evidencia de la pregunta 1: si miente, la conclusión miente.
+
+**Pregunta 3 (¿qué sobrevive a un cambio de framework o de proveedor Git?).** Medido con `grep`, no estimado: **1 de 25 ficheros** importa `agent_framework`, y **fuera de `ado/` solo ese mismo fichero** llama a la API de Azure DevOps — el resto importa de `ado/` únicamente el tipo Pydantic `PlantillaDisponible`, o lo hace dentro de su demo `__main__`. El paquete `ado/` son 1.358 de ~4.300 líneas.
 
 ### T5.1 completada (la traza en runs/)
 `traza/registro.py`, determinista. Una carpeta por ejecución con 14 ficheros: `requisitos.json`, `transcripcion.md`, `seleccion.json`, `parametros.json`, `variables.json`, los 5 ficheros generados bajo `generado/`, las dos `descripcion-pr-*.md`, `metadata.json` y `resultado.json`.
