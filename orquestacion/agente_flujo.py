@@ -35,6 +35,7 @@ hasta T3.2/T3.3; estan declarados y marcados como tales, no ocultos.
 Ejecuta con (desde la raiz del repo): .venv/bin/python -m orquestacion.agente_flujo
 """
 import asyncio
+import os
 
 from agent_framework import (
     Executor,
@@ -49,7 +50,11 @@ from pydantic import BaseModel, ConfigDict
 
 from ado.catalogo import PlantillaDisponible, descubrir_plantillas, leer_schema
 from ado.cliente import ClienteAdo
-from ado.destinos import Inventario, inventario
+from ado.cambios import Cambio, Propuesta, abrir_alta, nombre_rama
+from ado.destinos import Inventario, inventario, nombre_repo_pipelines, ruta_pipeline, ruta_variables
+from redaccion import texto
+from redaccion.agente_pr import explicar
+from render.renderizador import renderizar_pipeline
 from parametros.generador import Pendiente, convertir, derivar, validar
 from parametros.variables import generar, huecos
 from llm.cliente import llamadas_al_modelo, reiniciar_contador
@@ -86,7 +91,9 @@ class Contexto(BaseModel):
     parametros: dict = {}
     origen_parametros: dict[str, str] = {}
     ficheros_variables: dict[str, str] = {}
+    pipeline_yaml: str = ""
     confirmado: bool | None = None
+    urls_prs: list[str] = []
 
     def paso(self, estado: Estado, **cambios) -> "Contexto":
         """Marca el estado recorrido y aplica los cambios. Devuelve uno NUEVO:
@@ -302,6 +309,22 @@ async def resolver_variables(ctx_flujo: Contexto, ctx: WorkflowContext[Contexto]
     await ctx.send_message(ctx_flujo.paso(Estado.RESOLVIENDO_VARIABLES, ficheros_variables=ficheros))
 
 
+@executor(id=Estado.RENDERIZANDO)
+async def renderizar(ctx_flujo: Contexto, ctx: WorkflowContext[Contexto]) -> None:
+    """DETERMINISTA. El modelo NUNCA escribe el artefacto que se despliega."""
+    if ctx_flujo.plantilla is None:
+        await ctx.send_message(ctx_flujo.paso(Estado.RENDERIZANDO))
+        return
+    yaml_hijo = renderizar_pipeline(
+        ctx_flujo.plantilla, ctx_flujo.parametros,
+        proyecto=_ado().proyecto,
+        repo_plantillas=os.environ.get("AZDO_REPO_PLANTILLAS", "plantillas-ci"),
+        repo_codigo=ctx_flujo.requisitos.repo_codigo,
+        entornos=list(ctx_flujo.requisitos.entornos),
+    )
+    await ctx.send_message(ctx_flujo.paso(Estado.RENDERIZANDO, pipeline_yaml=yaml_hijo))
+
+
 class ConfirmarPush(Executor):
     """HUMANO. La puerta: aqui el workflow se SUSPENDE de verdad.
 
@@ -347,15 +370,85 @@ class ConfirmarPush(Executor):
     async def recibir(self, peticion: str, respuesta: bool, ctx: WorkflowContext[None, Contexto]) -> None:
         # Se reconstruye desde el estado que guardo `preguntar`. Para T3.1 basta
         # con registrar el veredicto: escribir de verdad es el Bloque 4.
-        contexto = Contexto(**ctx.get_state("contexto"))
-        final = Estado.COMPLETADO if respuesta else Estado.CANCELADO
-        await ctx.yield_output(contexto.paso(Estado.CONFIRMANDO_PUSH).paso(final, confirmado=respuesta))
+        contexto = Contexto(**ctx.get_state("contexto")).paso(Estado.CONFIRMANDO_PUSH)
+        if not respuesta:
+            # Un "no" termina aqui. No se ha escrito NADA en Azure DevOps.
+            await ctx.yield_output(contexto.paso(Estado.CANCELADO, confirmado=False))
+            return
+        await ctx.send_message(contexto.model_copy(update={"confirmado": True}))
+
+
+@executor(id=Estado.REDACTANDO_PRS)
+async def redactar_prs(ctx_flujo: Contexto, ctx: WorkflowContext[Contexto]) -> None:
+    """LLM. El ultimo del sistema, y el de menor riesgo: su salida no la consume
+    ningun programa, no decide nada, y si falla hay respaldo determinista."""
+    pendientes = {
+        f"vars/{ambito}.yml": faltan
+        for ambito, contenido in ctx_flujo.ficheros_variables.items()
+        if (faltan := huecos(contenido))
+    }
+    req = ctx_flujo.requisitos
+    ctx.set_state("descripciones", {
+        "variables": texto.descripcion_variables(
+            req, [ruta_variables(a) for a in sorted(ctx_flujo.ficheros_variables)], pendientes,
+            explicar(req, foco="los ficheros de variables por entorno", huecos=pendientes),
+        ),
+        "pipeline": texto.descripcion_pipeline(
+            req, ctx_flujo.plantilla.id, ctx_flujo.plantilla.tag,
+            [ruta_pipeline(req.repo_codigo)], ctx_flujo.parametros, ctx_flujo.origen_parametros,
+            explicar(req, foco="el pipeline que extiende la plantilla",
+                     plantilla_id=ctx_flujo.plantilla.id, parametros=ctx_flujo.parametros),
+        ),
+    })
+    await ctx.send_message(ctx_flujo.paso(Estado.REDACTANDO_PRS))
+
+
+class EscribirEnAdo(Executor):
+    """DETERMINISTA. Los dos pull requests, en orden, o ninguno."""
+
+    @handler
+    async def escribir(self, ctx_flujo: Contexto, ctx: WorkflowContext[None, Contexto]) -> None:
+        req = ctx_flujo.requisitos
+        rama = nombre_rama(req.repo_codigo)
+        descripciones = ctx.get_state("descripciones") or {"variables": "", "pipeline": ""}
+
+        variables = Propuesta(
+            repo=req.repo_codigo, rama=rama,
+            cambios=[Cambio(ruta_variables(a), c, "add")
+                     for a, c in sorted(ctx_flujo.ficheros_variables.items())],
+            titulo=f"feat: variables de pipeline para {req.repo_codigo}",
+            descripcion=descripciones["variables"],
+            mensaje_commit=f"feat: variables de pipeline por entorno para {req.repo_codigo}",
+        )
+        pipeline = Propuesta(
+            repo=nombre_repo_pipelines(), rama=rama,
+            cambios=[Cambio(ruta_pipeline(req.repo_codigo), ctx_flujo.pipeline_yaml, "add")],
+            titulo=f"feat: pipeline de CI para {req.repo_codigo}",
+            descripcion=descripciones["pipeline"],
+            mensaje_commit=f"feat: pipeline de CI para {req.repo_codigo} "
+                           f"({ctx_flujo.plantilla.id} {ctx_flujo.plantilla.tag})",
+        )
+
+        resultado = abrir_alta(_ado(), variables, pipeline)
+        if resultado.error:
+            await ctx.yield_output(ctx_flujo.paso(Estado.REQUIERE_REVISION_HUMANA))
+            print(f"  [ado] {resultado.error}")
+            return
+
+        for pr in resultado.prs:
+            print(f"  [ado] PR #{pr.id} en {pr.repo}"
+                  f"{'  (reutilizado)' if pr.reutilizado else ''}  ->  {pr.url}")
+        await ctx.yield_output(
+            ctx_flujo.paso(Estado.ESCRIBIENDO_EN_ADO).paso(Estado.CREANDO_PRS)
+            .paso(Estado.COMPLETADO, urls_prs=[pr.url for pr in resultado.prs])
+        )
 
 
 def construir_workflow() -> tuple:
     recoger = RecogerRequisitos(id=Estado.RECOGIENDO_REQUISITOS)
     generar_parametros = GenerarParametros(id=Estado.GENERANDO_PARAMETROS)
     confirmar = ConfirmarPush(id=Estado.CONFIRMANDO_PUSH)
+    escribir = EscribirEnAdo(id=Estado.ESCRIBIENDO_EN_ADO)
     workflow = (
         WorkflowBuilder(start_executor=recoger)
         .add_edge(recoger, descubrir_catalogo)
@@ -363,7 +456,10 @@ def construir_workflow() -> tuple:
         .add_edge(seleccionar_plantilla, generar_parametros)
         .add_edge(generar_parametros, planificar_cambios)
         .add_edge(planificar_cambios, resolver_variables)
-        .add_edge(resolver_variables, confirmar)
+        .add_edge(resolver_variables, renderizar)
+        .add_edge(renderizar, confirmar)
+        .add_edge(confirmar, redactar_prs)
+        .add_edge(redactar_prs, escribir)
         .build()
     )
     return workflow, confirmar

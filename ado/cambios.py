@@ -189,6 +189,32 @@ def abandonar(cliente: ClienteAdo, pr: PullRequestAbierto) -> None:
                             "newObjectId": SHA_VACIO}])
 
 
+def enlazar(cliente: ClienteAdo, variables: Propuesta, pipeline: Propuesta,
+            pr_variables: PullRequestAbierto, pr_pipeline: PullRequestAbierto) -> None:
+    """Anade a cada PR el enlace al hermano, una vez que los dos existen.
+
+    No puede hacerse antes: la URL de un PR no existe hasta crearlo. De ahi que
+    sea un paso aparte y no parte de la descripcion original.
+
+    OJO, trampa de ADO comprobada en real: el endpoint que LISTA pull requests
+    devuelve la descripcion TRUNCADA a 400 caracteres; solo el GET de un PR
+    concreto la da entera. Por eso aqui se parte de `propuesta.descripcion` --
+    nuestra propia fuente-- y nunca de lo que devuelva la API. Releer del listado
+    y volver a escribir destruiria la descripcion, y eso paso de verdad una vez
+    depurando a mano.
+    """
+    from redaccion.texto import enlace_hermano
+
+    for propuesta, pr, otro, que_es in (
+        (variables, pr_variables, pr_pipeline, "el pipeline; mergear DESPUES de este"),
+        (pipeline, pr_pipeline, pr_variables, "las variables; mergear ANTES que este"),
+    ):
+        cliente.patch(
+            f"/_apis/git/repositories/{id_repo(cliente, pr.repo)}/pullrequests/{pr.id}",
+            json={"description": propuesta.descripcion + enlace_hermano(otro.url, que_es)},
+        )
+
+
 def abrir_alta(cliente: ClienteAdo, variables: Propuesta, pipeline: Propuesta) -> ResultadoAlta:
     """Los dos pull requests, en orden, o ninguno.
 
@@ -204,7 +230,9 @@ def abrir_alta(cliente: ClienteAdo, variables: Propuesta, pipeline: Propuesta) -
 
     try:
         empujar(cliente, pipeline.repo, pipeline.rama, pipeline.cambios, pipeline.mensaje_commit)
-        resultado.prs.append(crear_pull_request(cliente, pipeline))
+        pr_pipeline = crear_pull_request(cliente, pipeline)
+        resultado.prs.append(pr_pipeline)
+        enlazar(cliente, variables, pipeline, pr_variables, pr_pipeline)
     except ErrorAdo as error:
         # Regla 2: medio alta abierta es peor que nada.
         abandonar(cliente, pr_variables)

@@ -9,7 +9,42 @@ Continúa la bitácora de `poc-agentes` (sesiones 1–4, hasta 2026-09-12), que 
 ## Sesión 1 — 2026-09-16
 
 ### Por dónde retomar
-**T4.1–T4.3 hechas.** Siguiente: **T4.5** (las descripciones de los dos PR, **único LLM que queda por escribir**) y conectar `ado/cambios.py` al flujo como nodos `escribiendo_en_ado` / `creando_prs`. Después T4.4 (verificar el merge no destructivo contra ADO real) y el Bloque 5 (traza en `runs/`).
+**EL RECORRIDO COMPLETO FUNCIONA:** de la conversación en terminal a dos Pull Requests reales y enlazados en Azure DevOps. Probado con `.venv/bin/python -m orquestacion.agente_flujo` (guionizado) y disponible en `.venv/bin/python agente_chat.py` (interactivo).
+
+Queda: **T4.4** (verificar contra ADO real que regenerar no destruye ediciones humanas — el código lo hace, falta la prueba de extremo a extremo) y el **Bloque 5** (traza en `runs/` con el origen de cada valor, y `CONCLUSIONES.md`).
+
+### T4.5 + cableado completo — la PoC ya abre Pull Requests de verdad
+Tres piezas nuevas y el flujo entero conectado.
+
+**`render/renderizador.py`** (determinista, salda la deuda de `poc-agentes`): el pipeline hijo con **dos** entradas en `resources.repositories` — `templates` anclado **por tag** (el pipeline queda clavado a la versión de plantilla con la que se decidió) y `codigo`, necesario porque el pipeline vive lejos del código y porque las variables se leen de él. Un `parameters.entorno` con lista cerrada elige qué fichero de variables se carga. Única expresión que no pasa por `yaml.dump` (`${{ parameters.entorno }}`) va con marcador y se sustituye al final, releyendo el resultado.
+
+**`redaccion/texto.py` (determinista) + `redaccion/agente_pr.py` (LLM).** La división es la decisión que importa: **el modelo escribe SOLO el párrafo de explicación**. El orden de merge, la lista de ficheros, los huecos y el enlace al PR hermano los escribe código. Si el modelo se inventara el orden de merge, alguien mergearía el pipeline antes que sus variables y lo dejaría roto — esa frase no puede depender de que un LLM tenga un buen día. Y si el modelo falla hay respaldo determinista: el PR se abre igual.
+
+**Observación honesta sobre el 4B:** en la prosa libre **se inventa cosas** que no están en los datos ("ejecutar pruebas unitarias y de integración", "despliegue a los entornos"), pese a que el prompt se lo prohíbe explícitamente. Es justo por eso que este es el paso de menor riesgo: su salida no la consume ningún programa y un humano la lee antes de aprobar.
+
+**Recorrido completo verificado contra ADO real — 13 estados, 5 llamadas al modelo:**
+```
+llm           recogiendo_requisitos
+humano        confirmando_requisitos
+determinista  descubriendo_catalogo
+hibrido       seleccionando_plantilla
+determinista  generando_parametros
+determinista  planificando_cambios
+determinista  resolviendo_variables
+determinista  renderizando
+humano        confirmando_push
+llm           redactando_prs
+determinista  escribiendo_en_ado
+determinista  creando_prs
+determinista  completado
+reparto: determinista=8  hibrido=1  llm=2  humano=2
+```
+Resultado: **PR #8** en `demo-servicio-java` (los 4 `vars/*.yml`) y **PR #9** en `pipelines` (el `azure-pipelines.yml`), enlazados entre sí y con el orden de merge escrito en ambos.
+
+### Trampa de ADO: el listado de PR trunca la descripción
+El endpoint que **lista** pull requests devuelve la descripción **truncada a 400 caracteres**; solo el `GET` de un PR concreto la da entera.
+
+**Y el daño lo hice depurando, no el código.** Al verificar leí la descripción del listado, vi que faltaba el enlace y llamé a `enlazar()` a mano pasándole esa versión truncada — que se escribió de vuelta, destruyendo la descripción real. El flujo nunca hace eso: parte de `propuesta.descripcion`, su propia fuente, y jamás de lo que devuelve la API. Anotado en el docstring de `enlazar()`. Los PR corrompidos se abandonaron y se regeneró el alta limpia.
 
 ### T4.1–T4.3 completadas (escribir en Azure DevOps)
 `ado/cambios.py`. Cero IA: es fontanería, y es lo que convierte la PoC en demo.

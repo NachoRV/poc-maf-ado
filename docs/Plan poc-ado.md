@@ -434,7 +434,7 @@ El objetivo de esta PoC es más estrecho y conviene no perderlo de vista: **tene
 
 **Lo que SÍ sigue en alcance** y estaba mezclado en esta tarea: el renderizador tiene que emitir las rutas reales del escenario — `catalog/<id>/template.yaml@templates` (ya resuelto, es `PlantillaDisponible.ruta_template`) y `POC-MAF/plantillas-ci` en vez de los `MiOrg/MiRepoDePlantillas` heredados. Eso no es compatibilidad de plantillas, es que lo que generamos apunte a donde de verdad está. Pasa al Bloque 3, con el renderizado.
 
-## T4.1 — Rama y commit en una sola llamada
+## T4.1 — Rama y commit en una sola llamada  ✅
 `ado/cambios.py`. **Ya probado en T0.3:** la Pushes API crea rama y commit de una vez, sin clonar nada, y admite varios ficheros en el mismo commit (allí se subieron 10).
 
 `POST .../_apis/git/repositories/{repoId}/pushes?api-version=7.1`
@@ -458,7 +458,7 @@ Nombre de rama y mensaje de commit: **deterministas, por convención**. No es tr
 
 **Criterio de éxito:** una rama nueva en cada uno de los dos repos, con sus ficheros. Comprobado en la web de ADO, no solo por el 201.
 
-## T4.2 — Los dos Pull Requests, o ninguno
+## T4.2 — Los dos Pull Requests, o ninguno  ✅
 `POST .../_apis/git/repositories/{repoId}/pullrequests?api-version=7.1` con `sourceRefName`, `targetRefName`, `title`, `description`. La URL para un humano se compone como `https://dev.azure.com/{org}/{project}/_git/{repo}/pullrequest/{id}`.
 
 **Lo específico de este diseño:** son dos PR en dos repos y no hay transacción posible. Reglas:
@@ -468,7 +468,7 @@ Nombre de rama y mensaje de commit: **deterministas, por convención**. No es tr
 
 **Criterio de éxito:** los dos PR se abren enlazados; y forzando un fallo en el segundo (p.ej. un nombre de rama inválido), el primero desaparece y ADO queda como estaba.
 
-## T4.3 — La puerta humana y la idempotencia
+## T4.3 — La puerta humana y la idempotencia  ✅
 - **Confirmación explícita antes de escribir.** El estado `CONFIRMANDO_PUSH` muestra los cinco ficheros, los dos repos y los nombres de rama, y espera un "sí". Ninguna escritura ocurre sin ella.
 - **Idempotencia sobre dos repos.** Si las ramas ya existen, reutilizarlas o sufijar. Si ya hay PR abiertos de esas ramas, devolverlos en vez de crear otros.
 
@@ -481,7 +481,7 @@ Procedimiento: ejecutar el alta completa, editar a mano en ADO un `vars/pro.yml`
 
 **Criterio de éxito:** el diff del segundo PR no toca lo que el humano cambió. Si lo toca, la herramienta no es segura de re-ejecutar y eso es un defecto de diseño, no un detalle.
 
-## T4.5 — Las descripciones de los PR (aquí sí, LLM)
+## T4.5 — Las descripciones de los PR (aquí sí, LLM)  ✅
 Hereda de `catalog/justificador.py`. Markdown corto para el revisor: qué plantilla se eligió y por qué, qué parámetros se aplicaron y de qué requisito sale cada uno, qué variables se generaron y cuáles se respetaron por existir ya, qué controles incluye la plantilla, qué se asumió y qué vigilar. Más el enlace al PR hermano y el orden de merge.
 
 Texto libre, sin validar-y-reintentar: no hay esquema que cumplir y un humano lo lee antes de aprobar.
