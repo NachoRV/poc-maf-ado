@@ -65,11 +65,11 @@ class Paso:
 # desactualizado.
 PASOS: dict[Estado, Paso] = {
     Estado.RECOGIENDO_REQUISITOS: Paso(
-        Naturaleza.LLM, "requisitos/agente_recolector.py",
+        Naturaleza.LLM, "orquestacion/agente_flujo.py + requisitos/agente_extractor.py",
         "El input es prosa abierta. Unico punto del sistema con entrada no estructurada.",
     ),
     Estado.CONFIRMANDO_REQUISITOS: Paso(
-        Naturaleza.HUMANO, "requisitos/confirmacion.py",
+        Naturaleza.HUMANO, "requisitos/confirmacion.py (clasificador determinista)",
         "Caza lo que el modelo dedujo de mas o se dejo. Clasificar el si/no no cuesta una llamada.",
     ),
     Estado.DESCUBRIENDO_CATALOGO: Paso(
@@ -77,16 +77,21 @@ PASOS: dict[Estado, Paso] = {
         "REST + YAML, anclado por tag. No hay nada que interpretar.",
     ),
     Estado.SELECCIONANDO_PLANTILLA: Paso(
-        Naturaleza.HIBRIDO, "seleccion/ (T3.2, pendiente)",
+        Naturaleza.HIBRIDO, "seleccion/reglas.py + seleccion/agente_hibrido.py",
         "Reglas sobre los requisitos primero; el modelo solo si 0 o >1 candidatos.",
     ),
     Estado.GENERANDO_PARAMETROS: Paso(
-        Naturaleza.HIBRIDO, "parametros/ (T3.3, pendiente)",
-        "Lo que el requisito ya fija se deriva; el modelo solo rellena los huecos.",
+        # Era HIBRIDO en el plan original. Dejo de serlo el 2026-09-18, cuando el
+        # usuario eligio que NADA se infiera: lo que no se deriva se pregunta. Y
+        # aqui un hueco no vale, porque el schema los declara required.
+        Naturaleza.DETERMINISTA, "parametros/generador.py",
+        "Se deriva de los requisitos; lo que falte se PREGUNTA, no se inventa. "
+        "Puede suspenderse, pero con requisitos completos no pregunta nada.",
     ),
     Estado.RESOLVIENDO_VARIABLES: Paso(
-        Naturaleza.DETERMINISTA, "parametros/variables.py (T3.4, pendiente)",
-        "Defaults del manifest + merge con lo que ya existe. El modelo no toca esto.",
+        Naturaleza.DETERMINISTA, "parametros/variables.py",
+        "Los cuatro ficheros siempre. Lo que no se sepa queda como HUECO, nunca "
+        "inventado, y regenerar funde sin pisar lo que un humano anadio.",
     ),
     Estado.RENDERIZANDO: Paso(
         Naturaleza.DETERMINISTA, "render/ (pendiente)",

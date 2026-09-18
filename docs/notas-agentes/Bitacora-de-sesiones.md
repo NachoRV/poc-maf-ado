@@ -9,9 +9,22 @@ Continúa la bitácora de `poc-agentes` (sesiones 1–4, hasta 2026-09-12), que 
 ## Sesión 1 — 2026-09-16
 
 ### Por dónde retomar
-**Siguiente: T3.3 — parámetros del `extends`** (`parametros/`). **Antes de empezar hay que preguntar al usuario**: dijo "no necesito que infiera nada" a propósito de las **variables de entorno**, pero los parámetros del `extends` (`isDocker`, `javaVersion`, `appVersion`) son otra cosa — su `parameters.schema.json` los declara `required`, así que un hueco deja el YAML inválido. O el LLM rellena los que falten (plan original), o se exigen todos en la conversación y T3.3 se queda sin modelo. Cambia si T3.3 tiene agente o no.
+**Bloque 3 completo.** Siguiente: **Bloque 4 — escribir en Azure DevOps** (`ado/cambios.py`). T4.1 rama+commit con la Pushes API (ya probada en T0.3, que subió 10 ficheros en un commit), T4.2 los **dos** PR enlazados con su orden de merge y rollback si falla el segundo, T4.3 idempotencia sobre dos repos, T4.4 verificar el merge no destructivo contra ADO real, T4.5 las descripciones (**único LLM que queda por escribir**). T4.0 está fuera de alcance.
 
-Después: **Bloque 4** (escribir en ADO). T4.0 está fuera de alcance.
+### T3.3 completada — opción B: tampoco aquí se infiere nada
+El usuario eligió: nada se infiere, ni en variables ni en parámetros. `parametros/generador.py` va **sin prefijo `agente_`**. Con esto el sistema se queda con **un solo agente de verdad**: la conversación.
+
+A diferencia de T3.4, aquí **un hueco no vale**: el `parameters.schema.json` los declara `required` y un hueco dejaría el pipeline inválido. Lo que no se deriva se **pregunta**.
+
+**El puente con el catálogo.** Los manifests declaran `derived_from` apuntando a señales del fingerprint de `poc-agentes` (`has_dockerfile`, `pom_java_version`) que aquí no existen. En vez de hardcodear "javaVersion sale de version_lenguaje" —que ataría el código al catálogo de hoy, justo lo que se evitó en T3.2— se traduce **señal → campo de `Requisitos`** con una tabla de puente, y **lo que no se sepa traducir no es un error: se pregunta**. El módulo queda completo sin conocer el catálogo entero.
+
+**Verificado:** requisitos completos → se deriva todo, **0 llamadas**; a medias → pregunta solo lo que falta con las opciones del manifest; valor fuera del enum → rechazado contra el schema real.
+
+**Efecto en la tabla de estados**, que es lo que se enseña: `generando_parametros` pasó de `HIBRIDO` a `DETERMINISTA`. Reparto declarado ahora: **11 deterministas, 1 híbrido, 2 LLM, 2 humanos**. De 16 estados, **3 pueden tocar el modelo; solo 2 lo necesitan siempre**, y uno de esos dos (las descripciones de los PR) es prosa que ningún sistema consume.
+
+**Efecto colateral que hubo que corregir:** el aviso de la confirmación decía *"si sigues, lo decidirá el modelo"*. Con la opción B eso pasó a ser **mentira** — ya no lo decide nadie, se pregunta. Corregido en los dos sitios donde aparecía.
+
+**El nodo se suspende y no hubo que tocar el conductor.** `GenerarParametros` es el segundo nodo con `request_info`, y `ejecutar()` no cambió ni una línea: solo ve "peticiones pendientes con su `response_type`". Esa es la ventaja de que el bucle sea genérico.
 
 ### T3.4 completada (variables por entorno) — CERO LLM
 Decisión del usuario del 2026-09-18, y es la que define el módulo: *"no necesito que infiera ninguna variable, la que no esté se deja el hueco; siempre se crean los 4 ficheros, uno por entorno y el común, porque esto lo tendrán todos los proyectos y tecnologías"*.

@@ -47,9 +47,10 @@ from agent_framework import (
 )
 from pydantic import BaseModel, ConfigDict
 
-from ado.catalogo import PlantillaDisponible, descubrir_plantillas
+from ado.catalogo import PlantillaDisponible, descubrir_plantillas, leer_schema
 from ado.cliente import ClienteAdo
 from ado.destinos import Inventario, inventario
+from parametros.generador import Pendiente, convertir, derivar, validar
 from parametros.variables import generar, huecos
 from llm.cliente import llamadas_al_modelo, reiniciar_contador
 from orquestacion.estados import PASOS, Estado, Naturaleza
@@ -82,6 +83,8 @@ class Contexto(BaseModel):
     plantillas: list[PlantillaDisponible] = []
     plantilla: PlantillaDisponible | None = None
     inventario: Inventario | None = None
+    parametros: dict = {}
+    origen_parametros: dict[str, str] = {}
     ficheros_variables: dict[str, str] = {}
     confirmado: bool | None = None
 
@@ -177,7 +180,10 @@ class RecogerRequisitos(Executor):
     async def _pedir_confirmacion(self, sesion: Sesion, ctx) -> None:
         ctx.set_state("fase", FASE_CONFIRMANDO)
         vacios = slots_recomendados_vacios(sesion.requisitos)
-        aviso = f"\n    Ojo: {', '.join(vacios)} sin definir; si sigues lo decidira el modelo." if vacios else ""
+        # Ya NO dice "lo decidira el modelo": desde la opcion B (T3.3) nada se
+        # infiere. Lo que falte y la plantilla exija se preguntara despues.
+        aviso = (f"\n    Ojo: {', '.join(vacios)} sin definir. Nada se inventa: si la "
+                 "plantilla elegida lo necesita, te lo preguntare." if vacios else "")
         await ctx.request_info(
             f"Esto es lo que he entendido:\n{descripcion(sesion.requisitos)}{aviso}"
             "\n    ¿Lo confirmas? (si / no / dime que cambiar)",
@@ -211,6 +217,66 @@ async def seleccionar_plantilla(ctx_flujo: Contexto, ctx: WorkflowContext[Contex
     await ctx.send_message(
         ctx_flujo.paso(Estado.SELECCIONANDO_PLANTILLA, plantilla=resultado.plantilla)
     )
+
+
+class GenerarParametros(Executor):
+    """DETERMINISTA + HUMANO (T3.3). Ni una llamada al modelo.
+
+    Deriva de `Requisitos` todo lo que el manifest sabe de donde sacar, y lo que
+    quede lo PREGUNTA. A diferencia de las variables de entorno, aqui un hueco no
+    vale: el parameters.schema.json los declara `required` y un hueco dejaria el
+    pipeline invalido.
+
+    Es el segundo nodo que se suspende, y no hizo falta tocar el bucle de
+    `ejecutar()` para anadirlo: ese bucle solo ve "peticiones pendientes con su
+    response_type". Esa es la ventaja de que el conductor sea generico.
+    """
+
+    @handler
+    async def empezar(self, ctx_flujo: Contexto, ctx: WorkflowContext[Contexto]) -> None:
+        if ctx_flujo.plantilla is None:
+            await ctx.send_message(ctx_flujo.paso(Estado.GENERANDO_PARAMETROS))
+            return
+
+        derivacion = derivar(ctx_flujo.requisitos, ctx_flujo.plantilla)
+        ctx.set_state("contexto", ctx_flujo.model_dump())
+        ctx.set_state("valores", derivacion.valores)
+        ctx.set_state("origen", derivacion.origen)
+        ctx.set_state("pendientes", [vars(p) for p in derivacion.pendientes])
+
+        if derivacion.completa:
+            await self._terminar(ctx)
+            return
+        await ctx.request_info(derivacion.pendientes[0].pregunta(), str)
+
+    @response_handler
+    async def responder(self, peticion: str, respuesta: str, ctx: WorkflowContext[Contexto]) -> None:
+        pendientes = [Pendiente(**d) for d in ctx.get_state("pendientes")]
+        actual, resto = pendientes[0], pendientes[1:]
+
+        valores = {**ctx.get_state("valores"), actual.nombre: convertir(respuesta, actual)}
+        ctx.set_state("valores", valores)
+        ctx.set_state("origen", {**ctx.get_state("origen"), actual.nombre: "respuesta del usuario"})
+        ctx.set_state("pendientes", [vars(p) for p in resto])
+
+        if resto:
+            await ctx.request_info(resto[0].pregunta(), str)
+            return
+        await self._terminar(ctx)
+
+    @staticmethod
+    async def _terminar(ctx) -> None:
+        contexto = Contexto(**ctx.get_state("contexto"))
+        valores = ctx.get_state("valores")
+
+        # La validacion va contra el schema REAL de la plantilla, leido de ADO.
+        # Se hace aqui, antes de seguir, para que un valor invalido salte en la
+        # conversacion y no al escribir el fichero.
+        validar(valores, leer_schema(_ado(), contexto.plantilla))
+
+        await ctx.send_message(contexto.paso(
+            Estado.GENERANDO_PARAMETROS, parametros=valores, origen_parametros=ctx.get_state("origen")
+        ))
 
 
 @executor(id=Estado.PLANIFICANDO_CAMBIOS)
@@ -250,6 +316,10 @@ class ConfirmarPush(Executor):
         inv = ctx_flujo.inventario
         plan = "\n".join(f"      {linea}" for linea in inv.resumen()) if inv else "      (sin plan)"
         plantilla = ctx_flujo.plantilla.id if ctx_flujo.plantilla else "NINGUNA (revision humana)"
+        params = "\n".join(
+            f"      {n} = {v!r}   ({ctx_flujo.origen_parametros.get(n, '?')})"
+            for n, v in ctx_flujo.parametros.items()
+        )
 
         # Los huecos se enseñan ANTES de escribir, no despues: son lo unico que
         # una persona tiene que rellenar a mano, y verlos aqui sale mas barato
@@ -269,7 +339,8 @@ class ConfirmarPush(Executor):
         # guarda en el estado del executor para recuperarlo al reanudar.
         ctx.set_state("contexto", ctx_flujo.model_dump())
         await ctx.request_info(
-            f"Plantilla: {plantilla}\n{plan}{aviso}\n    ¿Escribo esto en Azure DevOps?", bool
+            f"Plantilla: {plantilla}\n    Parametros:\n{params}\n{plan}{aviso}"
+            "\n    ¿Escribo esto en Azure DevOps?", bool
         )
 
     @response_handler
@@ -283,12 +354,14 @@ class ConfirmarPush(Executor):
 
 def construir_workflow() -> tuple:
     recoger = RecogerRequisitos(id=Estado.RECOGIENDO_REQUISITOS)
+    generar_parametros = GenerarParametros(id=Estado.GENERANDO_PARAMETROS)
     confirmar = ConfirmarPush(id=Estado.CONFIRMANDO_PUSH)
     workflow = (
         WorkflowBuilder(start_executor=recoger)
         .add_edge(recoger, descubrir_catalogo)
         .add_edge(descubrir_catalogo, seleccionar_plantilla)
-        .add_edge(seleccionar_plantilla, planificar_cambios)
+        .add_edge(seleccionar_plantilla, generar_parametros)
+        .add_edge(generar_parametros, planificar_cambios)
         .add_edge(planificar_cambios, resolver_variables)
         .add_edge(resolver_variables, confirmar)
         .build()
@@ -359,6 +432,7 @@ async def main() -> None:
         "Java 17, va en Docker, version 1.0.0",
         "listo",    # corta la recogida de los recomendados y pasa a confirmar
         "si",       # confirmacion de REQUISITOS -- cero llamadas al modelo
+        "17",       # el modelo no extrajo version_lenguaje: T3.3 lo PREGUNTA
         "si",       # confirmacion del PUSH -- la puerta antes de escribir
     ])
 

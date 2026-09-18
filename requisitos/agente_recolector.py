@@ -200,7 +200,8 @@ def conversar(sesion: Sesion, leer, escribir) -> Requisitos | None:
         escribir(descripcion(sesion.requisitos))
         vacios = slots_recomendados_vacios(sesion.requisitos)
         if vacios:
-            escribir(f"\n  Ojo: {', '.join(vacios)} sin definir. Si sigues, lo decidira el modelo.")
+            escribir(f"\n  Ojo: {', '.join(vacios)} sin definir. Nada se inventa: "
+                     "si la plantilla elegida lo necesita, se preguntara despues.")
         escribir("\n\033[1magente\033[0m: ¿Lo confirmas? (si / no / dime que cambiar)")
 
         respuesta = leer()

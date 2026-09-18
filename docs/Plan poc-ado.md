@@ -383,12 +383,21 @@ Consecuencia de diseño que va más allá de la comodidad: quien reanuda puede s
 
 **Criterio de éxito:** `tecnologia: "java"` + `contenedor: true` resuelve por reglas con cero llamadas al modelo. Un requisito raro (`notas: "es un monorepo con Java y Node"`, `tecnologia` incierta) baja por la rama del LLM, y con umbral 0.99 escala a revisión humana.
 
-## T3.3 — Parámetros: derivar primero, preguntar al modelo después
-`parametros/generador.py`. **Cambio real respecto a `poc-agentes`:** allí todos los parámetros los generaba el LLM. Aquí, primero se recorre `manifest.parameters` y se rellena de forma determinista todo lo que el `Requisitos` ya fija (vía `derived_from`). El LLM recibe **solo los parámetros que siguen vacíos**, y el resultado se valida contra el `parameters.schema.json` completo.
+## T3.3 — Parámetros: derivar, y lo que falte PREGUNTARLO  ✅
+**Decisión del usuario (2026-09-18):** nada se infiere, tampoco aquí. `parametros/generador.py` va **sin prefijo `agente_`**: no hay modelo.
 
-**Criterio de éxito:** con un `Requisitos` completo (java/17/docker/1.0.0) el LLM no se llama ni una vez, porque no queda ningún hueco. Con uno parcial, se llama solo para los que faltan y lo ves en el log.
+A diferencia de las variables de entorno, aquí **un hueco no vale**: el `parameters.schema.json` los declara `required`, así que un parámetro vacío deja el pipeline inválido. Lo que no se deriva se **pregunta**, con las opciones que declara el manifest.
 
-**Por qué esto importa más de lo que parece:** es la demostración cuantificada de que el modelo se retira solo a medida que los datos de entrada mejoran. Con un usuario que sabe lo que quiere, el sistema es puro código.
+**El puente con el catálogo, que es la parte interesante.** Los manifests declaran `derived_from` apuntando a señales del fingerprint de `poc-agentes` (`has_dockerfile`, `pom_java_version`) que aquí no existen: allí se leían del repo, aquí salen de una conversación. En vez de hardcodear "javaVersion sale de version_lenguaje" —que ataría el código al catálogo de hoy, justo lo que se evitó en T3.2— se traduce **señal → campo de `Requisitos`**, y lo que no se sepa traducir **no es un error**:
+
+| Situación | Resultado |
+|---|---|
+| señal conocida + requisito con valor | se deriva, sin preguntar |
+| señal desconocida, o requisito vacío | se **pregunta** |
+
+Eso hace el módulo completo sin conocer el catálogo entero: añadir una plantilla con un parámetro nuevo no rompe nada, como mucho genera una pregunta más.
+
+**Criterio de éxito verificado:** con requisitos completos se deriva todo y el modelo **no se llama ni una vez**; con requisitos a medias se pregunta solo lo que falta, con las opciones del manifest; y un valor fuera del enum se rechaza contra el schema real (`'25' is not one of ['8','11','17','21']`).
 
 ## T3.4 — Variables por entorno: declarar, leer, fusionar  ✅
 **Tarea nueva**, consecuencia del modelo de variables. `parametros/variables.py`. Cero LLM: los tres pasos son deterministas.
