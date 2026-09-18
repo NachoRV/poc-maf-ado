@@ -136,6 +136,37 @@ def generar(requisitos: Requisitos, existentes_por_ambito: dict[str, str | None]
     }
 
 
+def origen_de_cada_variable(requisitos: Requisitos,
+                            existentes_por_ambito: dict[str, str | None]) -> dict[str, dict[str, str]]:
+    """{ambito: {variable: de donde salio}}. Para la traza de runs/.
+
+    Es la diferencia entre "el sistema puso 3 replicas" y "el sistema RESPETO las
+    8 que alguien habia puesto a mano". Sin esta columna, revisar una ejecucion
+    obliga a comparar ficheros a ojo.
+    """
+    previstas = variables_previstas(requisitos)
+    extra = requisitos.variables_extra
+    origenes: dict[str, dict[str, str]] = {}
+
+    for ambito in AMBITOS:
+        ya_estaban = _leer_existentes(existentes_por_ambito.get(ambito))
+        detalle = {}
+        for nombre in fundir(previstas.get(ambito, {}), ya_estaban):
+            if nombre in ya_estaban:
+                detalle[nombre] = ("conservada del repo (no se ha tocado)"
+                                   if nombre in previstas.get(ambito, {})
+                                   else "conservada del repo (anadida por una persona)")
+            elif nombre in extra.get(ambito, {}):
+                detalle[nombre] = "dictada por el usuario en la conversacion"
+            elif previstas.get(ambito, {}).get(nombre) is None:
+                detalle[nombre] = "HUECO: nadie la ha inventado"
+            else:
+                detalle[nombre] = "derivada de los requisitos"
+        origenes[ambito] = detalle
+
+    return origenes
+
+
 def huecos(contenido: str) -> list[str]:
     """Nombres de variable que quedaron sin valor. Para avisar en el PR."""
     datos = yaml.safe_load(contenido) or {}

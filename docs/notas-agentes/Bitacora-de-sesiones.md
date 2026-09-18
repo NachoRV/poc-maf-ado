@@ -9,9 +9,30 @@ Continúa la bitácora de `poc-agentes` (sesiones 1–4, hasta 2026-09-12), que 
 ## Sesión 1 — 2026-09-16
 
 ### Por dónde retomar
-**EL RECORRIDO COMPLETO FUNCIONA:** de la conversación en terminal a dos Pull Requests reales y enlazados en Azure DevOps. Probado con `.venv/bin/python -m orquestacion.agente_flujo` (guionizado) y disponible en `.venv/bin/python agente_chat.py` (interactivo).
+**El plan está prácticamente cerrado.** Queda:
+- **T5.2 — `CONCLUSIONES.md`**, que lo escribe el usuario en primera persona (igual que T4.4 en `poc-agentes`). Tres preguntas: cuántos de los estados necesitaron LLM de verdad y si el reparto medido coincide con el previsto; qué se rompió al pasar de disco a ADO; y qué parte del sistema seguiría siendo suya si cambiara de framework o de proveedor Git.
+- **T4.4** — verificar contra ADO real que regenerar no destruye ediciones humanas (el código lo hace y está probado en memoria; falta la prueba de extremo a extremo: editar un `vars/pro.yml` a mano en ADO y re-ejecutar el alta).
 
-Queda: **T4.4** (verificar contra ADO real que regenerar no destruye ediciones humanas — el código lo hace, falta la prueba de extremo a extremo) y el **Bloque 5** (traza en `runs/` con el origen de cada valor, y `CONCLUSIONES.md`).
+### T5.1 completada (la traza en runs/)
+`traza/registro.py`, determinista. Una carpeta por ejecución con 14 ficheros: `requisitos.json`, `transcripcion.md`, `seleccion.json`, `parametros.json`, `variables.json`, los 5 ficheros generados bajo `generado/`, las dos `descripcion-pr-*.md`, `metadata.json` y `resultado.json`.
+
+**Lo que la distingue de la traza de `poc-agentes` es una columna: el ORIGEN de cada valor.** No basta con guardar que `replicas` valía 8; hay que poder decir si lo decidió el sistema, lo dijo una persona, o **estaba ya en el repo y se respetó**. Con variables de entorno esa distinción deja de ser un lujo.
+
+```json
+"origen": {
+  "isDocker":    "requisitos.contenedor",
+  "appVersion":  "requisitos.version_app",
+  "javaVersion": "respuesta del usuario"      <- el modelo no lo extrajo, se preguntó
+}
+```
+
+Y para las variables, cuatro orígenes distinguidos: `derivada de los requisitos`, `dictada por el usuario`, `HUECO: nadie la ha inventado`, y **`conservada del repo`** —distinguiendo además si la añadió una persona y el sistema no la conoce—.
+
+**Se registra en los TRES finales** (completado, cancelado, revisión humana): una ejecución abandonada también merece traza — saber que alguien dijo que no, y ante qué plan, es información.
+
+**Refactor necesario:** `descripciones` y `historial` pasaron de `ctx.set_state` al `Contexto`. El estado de un executor **no lo ve el siguiente**, y el registro final es otro nodo. Es el tipo de acoplamiento que solo se ve al añadir el consumidor.
+
+`metadata.json` cruza la traza con la tabla de estados y el contador: backend, modelo, llamadas reales y cada estado con su naturaleza. **El reparto deja de ser una afirmación y pasa a ser un dato por ejecución.**
 
 ### T4.5 + cableado completo — la PoC ya abre Pull Requests de verdad
 Tres piezas nuevas y el flujo entero conectado.

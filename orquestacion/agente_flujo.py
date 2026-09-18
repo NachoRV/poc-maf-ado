@@ -56,8 +56,10 @@ from redaccion import texto
 from redaccion.agente_pr import explicar
 from render.renderizador import renderizar_pipeline
 from parametros.generador import Pendiente, convertir, derivar, validar
-from parametros.variables import generar, huecos
+from parametros.variables import generar, huecos, origen_de_cada_variable
+from traza.registro import guardar
 from llm.cliente import llamadas_al_modelo, reiniciar_contador
+from llm.cliente import llamadas_al_modelo as _llamadas
 from orquestacion.estados import PASOS, Estado, Naturaleza
 from seleccion.agente_hibrido import seleccionar
 from seleccion.reglas import EstadoSeleccion
@@ -92,8 +94,14 @@ class Contexto(BaseModel):
     origen_parametros: dict[str, str] = {}
     ficheros_variables: dict[str, str] = {}
     pipeline_yaml: str = ""
+    # Viajan en el mensaje y no en ctx.set_state porque los necesita el registro
+    # final, que es otro nodo: el estado de un executor no lo ve el siguiente.
+    historial: list[dict] = []
+    origen_variables: dict = {}
+    descripciones: dict[str, str] = {}
     confirmado: bool | None = None
     urls_prs: list[str] = []
+    carpeta_run: str = ""
 
     def paso(self, estado: Estado, **cambios) -> "Contexto":
         """Marca el estado recorrido y aplica los cambios. Devuelve uno NUEVO:
@@ -168,8 +176,8 @@ class RecogerRequisitos(Executor):
             # Los dos estados de conversacion se marcan aqui, al salir: la traza
             # tiene que reflejar por donde paso de verdad la ejecucion.
             await ctx.send_message(
-                Contexto(requisitos=sesion.requisitos).paso(Estado.RECOGIENDO_REQUISITOS)
-                .paso(Estado.CONFIRMANDO_REQUISITOS)
+                Contexto(requisitos=sesion.requisitos, historial=sesion.historial)
+                .paso(Estado.RECOGIENDO_REQUISITOS).paso(Estado.CONFIRMANDO_REQUISITOS)
             )
             return
 
@@ -306,7 +314,10 @@ async def resolver_variables(ctx_flujo: Contexto, ctx: WorkflowContext[Contexto]
         for ambito, fichero in (ctx_flujo.inventario.variables if ctx_flujo.inventario else {}).items()
     }
     ficheros = generar(ctx_flujo.requisitos, existentes)
-    await ctx.send_message(ctx_flujo.paso(Estado.RESOLVIENDO_VARIABLES, ficheros_variables=ficheros))
+    await ctx.send_message(ctx_flujo.paso(
+        Estado.RESOLVIENDO_VARIABLES, ficheros_variables=ficheros,
+        origen_variables=origen_de_cada_variable(ctx_flujo.requisitos, existentes),
+    ))
 
 
 @executor(id=Estado.RENDERIZANDO)
@@ -373,7 +384,7 @@ class ConfirmarPush(Executor):
         contexto = Contexto(**ctx.get_state("contexto")).paso(Estado.CONFIRMANDO_PUSH)
         if not respuesta:
             # Un "no" termina aqui. No se ha escrito NADA en Azure DevOps.
-            await ctx.yield_output(contexto.paso(Estado.CANCELADO, confirmado=False))
+            await ctx.yield_output(_registrar(contexto.paso(Estado.CANCELADO, confirmado=False)))
             return
         await ctx.send_message(contexto.model_copy(update={"confirmado": True}))
 
@@ -388,7 +399,7 @@ async def redactar_prs(ctx_flujo: Contexto, ctx: WorkflowContext[Contexto]) -> N
         if (faltan := huecos(contenido))
     }
     req = ctx_flujo.requisitos
-    ctx.set_state("descripciones", {
+    descripciones = {
         "variables": texto.descripcion_variables(
             req, [ruta_variables(a) for a in sorted(ctx_flujo.ficheros_variables)], pendientes,
             explicar(req, foco="los ficheros de variables por entorno", huecos=pendientes),
@@ -399,8 +410,8 @@ async def redactar_prs(ctx_flujo: Contexto, ctx: WorkflowContext[Contexto]) -> N
             explicar(req, foco="el pipeline que extiende la plantilla",
                      plantilla_id=ctx_flujo.plantilla.id, parametros=ctx_flujo.parametros),
         ),
-    })
-    await ctx.send_message(ctx_flujo.paso(Estado.REDACTANDO_PRS))
+    }
+    await ctx.send_message(ctx_flujo.paso(Estado.REDACTANDO_PRS, descripciones=descripciones))
 
 
 class EscribirEnAdo(Executor):
@@ -410,7 +421,7 @@ class EscribirEnAdo(Executor):
     async def escribir(self, ctx_flujo: Contexto, ctx: WorkflowContext[None, Contexto]) -> None:
         req = ctx_flujo.requisitos
         rama = nombre_rama(req.repo_codigo)
-        descripciones = ctx.get_state("descripciones") or {"variables": "", "pipeline": ""}
+        descripciones = ctx_flujo.descripciones or {"variables": "", "pipeline": ""}
 
         variables = Propuesta(
             repo=req.repo_codigo, rama=rama,
@@ -431,17 +442,17 @@ class EscribirEnAdo(Executor):
 
         resultado = abrir_alta(_ado(), variables, pipeline)
         if resultado.error:
-            await ctx.yield_output(ctx_flujo.paso(Estado.REQUIERE_REVISION_HUMANA))
+            await ctx.yield_output(_registrar(ctx_flujo.paso(Estado.REQUIERE_REVISION_HUMANA)))
             print(f"  [ado] {resultado.error}")
             return
 
         for pr in resultado.prs:
             print(f"  [ado] PR #{pr.id} en {pr.repo}"
                   f"{'  (reutilizado)' if pr.reutilizado else ''}  ->  {pr.url}")
-        await ctx.yield_output(
+        await ctx.yield_output(_registrar(
             ctx_flujo.paso(Estado.ESCRIBIENDO_EN_ADO).paso(Estado.CREANDO_PRS)
             .paso(Estado.COMPLETADO, urls_prs=[pr.url for pr in resultado.prs])
-        )
+        ))
 
 
 def construir_workflow() -> tuple:
@@ -463,6 +474,20 @@ def construir_workflow() -> tuple:
         .build()
     )
     return workflow, confirmar
+
+
+def _registrar(contexto: "Contexto") -> "Contexto":
+    """Vuelca la ejecucion en runs/ y devuelve el contexto con la ruta.
+
+    Se llama en los TRES finales posibles (completado, cancelado, revision
+    humana): una ejecucion que se abandono tambien merece traza -- saber que
+    alguien dijo que no, y ante que plan, es informacion.
+    """
+    contexto = contexto.paso(Estado.REGISTRANDO_RUN)
+    carpeta = guardar(contexto, llamadas_modelo=_llamadas(),
+                      naturaleza_por_estado={e: PASOS[e].naturaleza for e in Estado})
+    print(f"  [traza] guardada en {carpeta}")
+    return contexto.model_copy(update={"carpeta_run": str(carpeta)})
 
 
 def informe(traza: list[Estado], llamadas: int) -> str:

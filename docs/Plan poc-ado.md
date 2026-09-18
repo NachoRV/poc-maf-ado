@@ -492,7 +492,7 @@ Texto libre, sin validar-y-reintentar: no hay esquema que cumplir y un humano lo
 
 # Bloque 5 · Traza y conclusión (2 h)
 
-## T5.1 — `runs/` con los dos PR dentro
+## T5.1 — `runs/` con los dos PR dentro  ✅
 Una carpeta por ejecución: `requisitos.json`, `transcripcion.md` (la conversación entera), `seleccion.json` (plantilla, origen reglas/LLM, confianza), `parametros.json` con **el origen de cada valor** (derivado del requisito / generado por el LLM), `variables.json` con el origen de cada variable (**default del manifest / dictada por el usuario / conservada porque ya existía**), los cinco ficheros generados, `descripcion-pr-*.md` y `metadata.json` (backend, modelo, nº de llamadas al LLM, estados recorridos). Y `resultado.json` con **las dos URLs** y el orden de merge.
 
 **Criterio de éxito:** abres una carpeta y reconstruyes la ejecución entera sin volver a ejecutar nada — incluido *de dónde salió cada valor*. Esa columna de origen es lo que no tenías en la PoC anterior, y con variables por entorno pasa de ser un lujo a ser necesaria: es la diferencia entre "el sistema puso 3 réplicas" y "el sistema respetó las 8 réplicas que alguien había puesto a mano".
