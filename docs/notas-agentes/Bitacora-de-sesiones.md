@@ -9,7 +9,23 @@ Continúa la bitácora de `poc-agentes` (sesiones 1–4, hasta 2026-09-12), que 
 ## Sesión 1 — 2026-09-16
 
 ### Por dónde retomar
-**Bloque 3 completo.** Siguiente: **Bloque 4 — escribir en Azure DevOps** (`ado/cambios.py`). T4.1 rama+commit con la Pushes API (ya probada en T0.3, que subió 10 ficheros en un commit), T4.2 los **dos** PR enlazados con su orden de merge y rollback si falla el segundo, T4.3 idempotencia sobre dos repos, T4.4 verificar el merge no destructivo contra ADO real, T4.5 las descripciones (**único LLM que queda por escribir**). T4.0 está fuera de alcance.
+**T4.1–T4.3 hechas.** Siguiente: **T4.5** (las descripciones de los dos PR, **único LLM que queda por escribir**) y conectar `ado/cambios.py` al flujo como nodos `escribiendo_en_ado` / `creando_prs`. Después T4.4 (verificar el merge no destructivo contra ADO real) y el Bloque 5 (traza en `runs/`).
+
+### T4.1–T4.3 completadas (escribir en Azure DevOps)
+`ado/cambios.py`. Cero IA: es fontanería, y es lo que convierte la PoC en demo.
+
+**Las tres reglas que impone el reparto en dos repos:**
+1. **Orden**: variables primero, pipeline después. Un pipeline mergeado sin sus variables está roto — referencia `vars/*.yml@codigo`, que no existiría. El orden va escrito en la descripción de los dos.
+2. **Los dos o ninguno**: si falla el segundo, se abandona el primero y se borra su rama. Y las variables van primero **a propósito**: si algo falla, lo que queda abierto es el PR inofensivo, no un pipeline roto.
+3. **Idempotencia**: rama existente se reutiliza; PR activo desde esa rama se devuelve en vez de crear otro.
+
+**Verificado contra ADO real** (se crearon PR de verdad y se limpiaron después): dos PR enlazados creados, segunda ejecución **reutilizando** ambos (`reutilizado=True`), y el rollback probado abandonando los cuatro PR de prueba y borrando sus ramas. Quedan 0 PR activos.
+
+**El hallazgo, que solo aparece ejecutando dos veces:** la segunda pasada murió con `400: The path '/vars/dev.yml' specified in the add operation already exists`. Es la trampa `add`/`edit` de T1.3, con un matiz nuevo: **el inventario calcula el tipo contra `main`**, que es lo correcto para enseñárselo a un humano en la confirmación, pero en una reejecución que reutiliza la rama el fichero ya existe **en la rama** aunque siga sin existir en `main`.
+
+Arreglado donde toca: `empujar()` **resuelve el `change_type` contra la ref a la que de verdad escribe**, listando su árbol. Dejarlo en manos del llamante sería pedirle que acierte cada vez; resolverlo ahí lo hace correcto por construcción. El `add`/`edit` del inventario pasa a ser informativo para el humano.
+
+Otro detalle del mismo estilo: `oldObjectId` debe ser el último commit **de la rama** si ya existe, no el de la base — pasar el de la base sobre una rama existente es un rechazo de ADO.
 
 ### T3.3 completada — opción B: tampoco aquí se infiere nada
 El usuario eligió: nada se infiere, ni en variables ni en parámetros. `parametros/generador.py` va **sin prefijo `agente_`**. Con esto el sistema se queda con **un solo agente de verdad**: la conversación.
