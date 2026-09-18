@@ -390,30 +390,19 @@ Consecuencia de diseño que va más allá de la comodidad: quien reanuda puede s
 
 **Por qué esto importa más de lo que parece:** es la demostración cuantificada de que el modelo se retira solo a medida que los datos de entrada mejoran. Con un usuario que sabe lo que quiere, el sistema es puro código.
 
-## T3.4 — Variables por entorno: declarar, leer, fusionar
+## T3.4 — Variables por entorno: declarar, leer, fusionar  ✅
 **Tarea nueva**, consecuencia del modelo de variables. `parametros/variables.py`. Cero LLM: los tres pasos son deterministas.
 
-**Primero, extender el contrato del manifest.** Una plantilla tiene que declarar qué variables trae de serie, o el sistema no sabe qué generar:
+**Decisión del usuario (2026-09-18) que define la tarea:** *"No necesito que infiera ninguna variable: la que no esté, se deja el hueco. Siempre se crean los 4 ficheros, uno por entorno y el común, porque esto lo tendrán todos los proyectos y todas las tecnologías."*
 
-```yaml
-environment_variables:
-  - name: serviceName
-    scope: common                 # va a vars/common.yml
-    derived_from: repo_codigo     # sale del requisito, no se pregunta
-  - name: replicas
-    scope: per-env                # va a vars/{dev,acc,pro}.yml
-    defaults: { dev: 1, acc: 2, pro: 3 }
-  - name: dbPassword
-    scope: per-env
-    secret: true                  # -> "$(dbPassword)", NUNCA el valor
-```
+Consecuencia: **cero LLM en este paso**, y el `environment_variables` del manifest deja de ser necesario para arrancar. Un valor de variable de producción no es algo que un modelo pueda deducir —no está en los requisitos ni en el repo—, y una invención plausible es **peor** que un hueco, porque el hueco se ve y el valor inventado no.
 
-**Después, los tres pasos:**
-1. **Resolver los defaults** del manifest, más lo que derive del `Requisitos`, más `variables_extra`.
-2. **Leer los `vars/*.yml` que ya existan** en el repo de código (los trae T1.3).
-3. **Fusionar, ganando siempre lo existente.** Si `pro.yml` ya define `replicas: 8` porque alguien lo ajustó a mano, el default de 3 **no** lo pisa. Esta es la regla que hace que la herramienta sea segura de re-ejecutar; sin ella, la segunda pasada destruye trabajo humano.
+Los cuatro ficheros se crean **siempre**. Que un entorno no tenga variables propias todavía no es motivo para no crear el suyo: el fichero es el sitio donde alguien las pondrá, y que exista desde el alta evita la pregunta "¿dónde va esto?".
 
-Y la regla de seguridad de `poc-agentes`, que aquí pesa más porque las variables son justo donde vive lo sensible: **un campo marcado `secret: true` sale siempre como referencia `$(nombre)` a un variable group, jamás como valor literal**. Esto no se le pide al modelo: lo impone el código, porque el modelo no toca este paso.
+**Los tres pasos, todos deterministas:**
+1. **Resolver** lo que se sabe sin inferir: sale de `Requisitos` (`serviceName` ← `repo_codigo`, `appVersion` ← `version_app`) más lo que el usuario dictó en `variables_extra`. Lo que no se sepa queda como valor nulo con un comentario `TODO`.
+2. **Leer** los `vars/*.yml` que ya existan en el repo de código (los trae `ado/destinos.py`).
+3. **Fusionar, ganando siempre lo existente.** Incluye las variables que un humano añadió y que el sistema no conoce: no se borran por no estar previstas.
 
 **Criterio de éxito:** (1) con el repo de código limpio se generan los cuatro ficheros con los defaults del manifest; (2) si se siembra a mano un `pro.yml` con un valor cambiado y una variable inventada, una segunda ejecución conserva **las dos cosas**; (3) una variable `secret: true` nunca aparece con valor literal, ni siquiera si el usuario lo dictó en el chat.
 

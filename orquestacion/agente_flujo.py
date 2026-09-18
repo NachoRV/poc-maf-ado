@@ -50,6 +50,7 @@ from pydantic import BaseModel, ConfigDict
 from ado.catalogo import PlantillaDisponible, descubrir_plantillas
 from ado.cliente import ClienteAdo
 from ado.destinos import Inventario, inventario
+from parametros.variables import generar, huecos
 from llm.cliente import llamadas_al_modelo, reiniciar_contador
 from orquestacion.estados import PASOS, Estado, Naturaleza
 from seleccion.agente_hibrido import seleccionar
@@ -81,6 +82,7 @@ class Contexto(BaseModel):
     plantillas: list[PlantillaDisponible] = []
     plantilla: PlantillaDisponible | None = None
     inventario: Inventario | None = None
+    ficheros_variables: dict[str, str] = {}
     confirmado: bool | None = None
 
     def paso(self, estado: Estado, **cambios) -> "Contexto":
@@ -218,6 +220,22 @@ async def planificar_cambios(ctx_flujo: Contexto, ctx: WorkflowContext[Contexto]
     await ctx.send_message(ctx_flujo.paso(Estado.PLANIFICANDO_CAMBIOS, inventario=inv))
 
 
+@executor(id=Estado.RESOLVIENDO_VARIABLES)
+async def resolver_variables(ctx_flujo: Contexto, ctx: WorkflowContext[Contexto]) -> None:
+    """DETERMINISTA, sin una sola llamada al modelo (T3.4).
+
+    Va DESPUES de planificar porque necesita el contenido de los vars/*.yml que
+    ya existan: sin eso no se puede fundir, y regenerar destruiria lo que un
+    humano hubiera anadido.
+    """
+    existentes = {
+        ambito: fichero.contenido
+        for ambito, fichero in (ctx_flujo.inventario.variables if ctx_flujo.inventario else {}).items()
+    }
+    ficheros = generar(ctx_flujo.requisitos, existentes)
+    await ctx.send_message(ctx_flujo.paso(Estado.RESOLVIENDO_VARIABLES, ficheros_variables=ficheros))
+
+
 class ConfirmarPush(Executor):
     """HUMANO. La puerta: aqui el workflow se SUSPENDE de verdad.
 
@@ -232,12 +250,26 @@ class ConfirmarPush(Executor):
         inv = ctx_flujo.inventario
         plan = "\n".join(f"      {linea}" for linea in inv.resumen()) if inv else "      (sin plan)"
         plantilla = ctx_flujo.plantilla.id if ctx_flujo.plantilla else "NINGUNA (revision humana)"
+
+        # Los huecos se enseñan ANTES de escribir, no despues: son lo unico que
+        # una persona tiene que rellenar a mano, y verlos aqui sale mas barato
+        # que descubrirlos revisando el Pull Request.
+        pendientes = {
+            f"vars/{ambito}.yml": faltan
+            for ambito, contenido in ctx_flujo.ficheros_variables.items()
+            if (faltan := huecos(contenido))
+        }
+        aviso = ""
+        if pendientes:
+            detalle = "\n".join(f"      {fichero}: {', '.join(v)}" for fichero, v in pendientes.items())
+            aviso = f"\n    Variables sin valor (quedan como hueco; nadie las inventa):\n{detalle}"
+
         # El Contexto NO viaja dentro de la peticion ni vuelve en la respuesta:
         # lo que sale al exterior es solo el texto y lo que entra es un bool. Se
         # guarda en el estado del executor para recuperarlo al reanudar.
         ctx.set_state("contexto", ctx_flujo.model_dump())
         await ctx.request_info(
-            f"Plantilla: {plantilla}\n{plan}\n    ¿Escribo esto en Azure DevOps?", bool
+            f"Plantilla: {plantilla}\n{plan}{aviso}\n    ¿Escribo esto en Azure DevOps?", bool
         )
 
     @response_handler
@@ -257,7 +289,8 @@ def construir_workflow() -> tuple:
         .add_edge(recoger, descubrir_catalogo)
         .add_edge(descubrir_catalogo, seleccionar_plantilla)
         .add_edge(seleccionar_plantilla, planificar_cambios)
-        .add_edge(planificar_cambios, confirmar)
+        .add_edge(planificar_cambios, resolver_variables)
+        .add_edge(resolver_variables, confirmar)
         .build()
     )
     return workflow, confirmar

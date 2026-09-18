@@ -9,7 +9,27 @@ Continúa la bitácora de `poc-agentes` (sesiones 1–4, hasta 2026-09-12), que 
 ## Sesión 1 — 2026-09-16
 
 ### Por dónde retomar
-**Siguiente: T3.3 — parámetros** (`parametros/agente_generador.py`). Derivar de forma determinista todo lo que el `Requisitos` ya fija (vía `derived_from` del manifest) y pedirle al LLM **solo los huecos**, validando contra el `parameters.schema.json` real (`ado.catalogo.leer_schema`). Criterio: con requisitos completos el modelo no se llama ni una vez. Después T3.4 (variables por entorno con merge no destructivo).
+**Siguiente: T3.3 — parámetros del `extends`** (`parametros/`). **Antes de empezar hay que preguntar al usuario**: dijo "no necesito que infiera nada" a propósito de las **variables de entorno**, pero los parámetros del `extends` (`isDocker`, `javaVersion`, `appVersion`) son otra cosa — su `parameters.schema.json` los declara `required`, así que un hueco deja el YAML inválido. O el LLM rellena los que falten (plan original), o se exigen todos en la conversación y T3.3 se queda sin modelo. Cambia si T3.3 tiene agente o no.
+
+Después: **Bloque 4** (escribir en ADO). T4.0 está fuera de alcance.
+
+### T3.4 completada (variables por entorno) — CERO LLM
+Decisión del usuario del 2026-09-18, y es la que define el módulo: *"no necesito que infiera ninguna variable, la que no esté se deja el hueco; siempre se crean los 4 ficheros, uno por entorno y el común, porque esto lo tendrán todos los proyectos y tecnologías"*.
+
+`parametros/variables.py`, **sin prefijo `agente_`**: no hay modelo aquí. Un valor de variable de producción no es deducible —no está en los requisitos ni en el repo— y una invención plausible es **peor** que un hueco, porque el hueco se ve y el valor inventado no.
+
+**Los cuatro ficheros siempre.** Que un entorno no tenga variables propias todavía no es motivo para no crear el suyo: el fichero es el sitio donde alguien las pondrá.
+
+**Verificado, las tres propiedades:**
+- Alta en repo limpio → `common`, `dev`, `acc`, `pro`, con `azureSubscription` como hueco (`value:` nulo + comentario `TODO`).
+- Regeneración sobre un `pro.yml` editado a mano → conserva el hueco ya relleno (`SUB-PRODUCCION-REAL`), **no pisa** `replicas: 8` con el 3 calculado, y mantiene una variable que el sistema no conoce (`inventadaPorUnHumano`).
+- Sin `version_app` → hueco, no un `1.0.0` "razonable".
+
+**Bug cazado por la propia defensa:** `yaml.safe_dump` de un escalar suelto añade el marcador de fin de documento (`...`) y rompía el fichero. Lo detectó la relectura del YAML generado, que está justo para eso. Sustituido por `json.dumps` (JSON es subconjunto de YAML).
+
+**Bug de proceso, el mismo de siempre:** una edición con `str.replace` **no casó y no dijo nada**, así que el aviso de huecos en la puerta de confirmación no llegó a existir aunque yo lo diera por escrito. Se detectó depurando, no leyendo. Regla: toda edición por sustitución de texto lleva `assert` del patrón buscado.
+
+El flujo ya recorre 8 estados: `determinista=4  hibrido=1  llm=1  humano=2`, **3 llamadas al modelo** (una por turno de conversación). La puerta de confirmación ahora lista los huecos **antes** de escribir.
 
 ### T3.2 completada (selección de plantilla híbrida)
 `seleccion/reglas.py` (determinista) + `seleccion/agente_hibrido.py` (el desempate).
